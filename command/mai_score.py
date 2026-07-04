@@ -8,9 +8,10 @@ import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent
 
 from .. import log, is_reply_enabled
-from ..command.mai_base import extract_at_qqid, convert_message_segment_to_chain
+from ..command.mai_base import convert_message_segment_to_chain
 from ..libraries.image import image_to_base64, text_to_image
 from ..libraries.maimai_best_50 import generate
+from ..libraries.maimaidx_identity import extract_at_user_id, is_numeric_qq, resolve_at_qq, resolve_sender_qq
 from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_music_info import draw_music_play_data
 from ..libraries.maimaidx_player_score import music_global_data
@@ -23,18 +24,27 @@ async def best50_handler(event: AstrMessageEvent):
         yield event.plain_result('歌曲数据未加载，请稍后再试或联系管理员')
         return
     
-    qqid = event.get_sender_id()
     message_str = event.message_str.strip()
-    # 移除命令前缀
-    # 检查是否有 @ 消息
-    if '@' not in message_str:
-        username = re.sub(r"[MSG_ID:[^\]]*]", "", message_str.replace("b50", "").replace("B50", "")).strip()
+    username = re.sub(r"[MSG_ID:[^\]]*]", "", message_str.replace("b50", "").replace("B50", "")).strip()
+    qqid = None
+
+    if extract_at_user_id(event):
+        username = ''
+        identity = await resolve_at_qq(event)
+    elif username:
+        if is_numeric_qq(username):
+            qqid = username
+            username = ''
+        identity = None
     else:
-        username = ''   
-        at_qqid = extract_at_qqid(event)
-        if at_qqid:
-            qqid = at_qqid
-    
+        identity = await resolve_sender_qq(event)
+
+    if identity:
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
+
     result = await generate(qqid, username)
     chain: List[Any] = convert_message_segment_to_chain(result)
     if is_reply_enabled():
@@ -49,7 +59,8 @@ async def minfo_handler(event: AstrMessageEvent):
         yield event.plain_result('歌曲数据未加载，请稍后再试或联系管理员')
         return
     
-    qqid = event.get_sender_id()
+    qqid = None
+    username = None
     message_str = event.message_str.strip().lower()
     # 移除命令前缀
     for prefix in ['minfo', 'info']:
@@ -58,12 +69,16 @@ async def minfo_handler(event: AstrMessageEvent):
             break
     else:
         args = message_str
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
+    if extract_at_user_id(event):
+        identity = await resolve_at_qq(event)
+    else:
+        identity = await resolve_sender_qq(event)
+    if identity.error:
+        yield event.plain_result(identity.error)
+        return
+    qqid = identity.qqid
+
     if not args:
         yield event.plain_result('请输入曲目id或曲名')
         return
@@ -88,7 +103,7 @@ async def minfo_handler(event: AstrMessageEvent):
             return
         else:
             songs = str(alias[0].SongID)
-    pic = await draw_music_play_data(qqid, songs)
+    pic = await draw_music_play_data(qqid=qqid, music_id=songs, username=username)
     chain = convert_message_segment_to_chain(pic)
     if is_reply_enabled():
         chain.insert(0, Comp.Reply(id=event.message_obj.message_id))

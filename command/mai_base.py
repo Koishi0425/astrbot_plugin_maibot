@@ -10,6 +10,7 @@ from .. import Root, log, get_botname
 from ..libraries.image import image_to_base64, music_picture
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import *
+from ..libraries.maimaidx_identity import extract_at_user_id, resolve_at_qq, resolve_sender_qq, resolve_sender_qq_optional
 from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_music_info import draw_music_info
 from ..libraries.maimaidx_player_score import rating_ranking_data
@@ -192,11 +193,12 @@ async def mai_what_handler(event: AstrMessageEvent):
     
     music = mai.total_list.random()
     user = None
+    qqid = await resolve_sender_qq_optional(event)
     if match and match.group(1):
         point = match.group(1)
-        if '推分' in point or '上分' in point or '加分' in point:
+        if qqid and ('推分' in point or '上分' in point or '加分' in point):
             try:
-                user = await maiApi.query_user_b50(qqid=event.get_sender_id())
+                user = await maiApi.query_user_b50(qqid=qqid)
                 r = random.randint(0, 1)
                 _ra = 0
                 ignore = []
@@ -218,7 +220,7 @@ async def mai_what_handler(event: AstrMessageEvent):
             except (UserNotFoundError, UserDisabledQueryError):
                 pass
     
-    result = await draw_music_info(music, event.get_sender_id(), user)
+    result = await draw_music_info(music, qqid, user)
     # 将 MessageSegment 转换为 MessageChain
     chain = convert_message_segment_to_chain(result)
     yield event.chain_result(chain)
@@ -255,7 +257,7 @@ async def random_song_handler(event: AstrMessageEvent):
             msg = '没有这样的乐曲哦。'
             yield event.plain_result(msg)
         else:
-            result = await draw_music_info(music_data.random(), event.get_sender_id())
+            result = await draw_music_info(music_data.random(), await resolve_sender_qq_optional(event))
             # 将 MessageSegment 转换为 MessageChain
             chain = convert_message_segment_to_chain(result)
             yield event.chain_result(chain)
@@ -285,8 +287,12 @@ async def rating_ranking_handler(event: AstrMessageEvent):
 
 async def my_rating_ranking_handler(event: AstrMessageEvent):
     """我的排名"""
+    identity = await resolve_sender_qq(event)
+    if identity.error:
+        yield event.plain_result(identity.error)
+        return
     try:
-        user = await maiApi.query_user_b50(qqid=event.get_sender_id())
+        user = await maiApi.query_user_b50(qqid=identity.qqid)
         rank_data = await maiApi.rating_ranking()
         for num, rank in enumerate(rank_data):
             if rank.username == user.username:

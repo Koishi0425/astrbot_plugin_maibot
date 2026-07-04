@@ -27,7 +27,15 @@ git clone https://github.com/ZhiheZier/astrbot_plugin_maimaidx.git
 
 ### 2. 下载静态资源
 
-下载静态资源文件，解压后将 `static` 文件夹复制到插件根目录并覆盖（除了config.json）。
+推荐在插件安装并配置超级管理员后，由超级管理员在聊天中执行以下指令自动下载并安装静态资源：
+
+```text
+更新舞萌资源
+```
+
+该指令会下载资源包并覆盖 `static` 资源文件，同时保留 `static/config.json`。
+
+如需手动安装，也可以下载静态资源文件，解压后将 `static` 文件夹复制到插件根目录并覆盖（除了config.json）。
 
 - [Cloudreve私人云盘](https://cloud.yuzuchan.moe/f/nXt6/Resource.7z)
 - [onedrive](https://yuzuai-my.sharepoint.com/:u:/g/personal/yuzu_yuzuchan_moe/IQDRlCkUqPlaR409p6Gv_RK6AZ-dJaBtbgZoJMvFI4IJiYw?e=eu5f2h)
@@ -111,7 +119,10 @@ apt install fonts-wqy-microhei
 - `是什么歌 <别名>` - 通过别名查询歌曲
 
 ### 成绩查询
-- `b50 <QQ号>` - 查询 Best 50
+- `绑定QQ <QQ号>` - 绑定当前平台用户ID到 QQ 号（官方 QQ 机器人无法直接获取 QQ 号时使用）
+- `查看QQ绑定` - 查看当前绑定的 QQ 号
+- `解绑QQ` - 解除当前 QQ 绑定
+- `b50 <QQ号或查分器用户名>` - 查询 Best 50
 - `分数线 <难度+id> <分数>` - 查询分数线
 - `牌子进度 <QQ号>` - 查询牌子进度
 - `查看排名` - 查看排行榜

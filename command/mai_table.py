@@ -6,7 +6,8 @@ import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent
 
 from .. import comboRank, combo_rank, levelList, log, platecn, scoreRank, syncRank, is_reply_enabled
-from ..command.mai_base import convert_message_segment_to_chain, extract_at_qqid
+from ..command.mai_base import convert_message_segment_to_chain
+from ..libraries.maimaidx_identity import extract_at_user_id, resolve_at_qq, resolve_sender_qq
 from ..libraries.maimaidx_music_info import (
     draw_plate_table,
     draw_rating,
@@ -45,6 +46,12 @@ async def update_plate_handler(event: AstrMessageEvent, superusers: list = None)
     yield event.chain_result(chain)
 
 
+async def _resolve_query_qq(event: AstrMessageEvent):
+    if extract_at_user_id(event):
+        return await resolve_at_qq(event)
+    return await resolve_sender_qq(event)
+
+
 async def rating_table_handler(event: AstrMessageEvent):
     """定数表命令处理"""
     from .. import ratingdir
@@ -69,19 +76,19 @@ async def rating_table_handler(event: AstrMessageEvent):
 
 async def table_pfm_handler(event: AstrMessageEvent):
     """完成表命令处理"""
-    qqid = event.get_sender_id()
     message_str = event.message_str.strip()
     # 移除后缀
     args = message_str.replace('完成表', '').strip()
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
     rating = re.search(r'^([0-9]+\+?)(app|fcp|ap|fc)?', args, re.IGNORECASE)
     plate = re.search(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉熊華华爽煌舞霸宙星祭祝双宴镜彩])([極极将舞神者]舞?)$', args)
-    
+
+    identity = await _resolve_query_qq(event)
+    if identity.error:
+        yield event.plain_result(identity.error)
+        return
+    qqid = identity.qqid
+
     if rating:
         ra = rating.group(1)
         plan = rating.group(2)
@@ -89,7 +96,7 @@ async def table_pfm_handler(event: AstrMessageEvent):
             yield event.plain_result('只支持查询lv6-15的完成表')
             return
         elif ra in levelList[5:]:
-            pic = await draw_rating_table(qqid, ra, True if plan and plan.lower() in combo_rank else False)
+            pic = await draw_rating_table(qqid=qqid, rating=ra, isfc=True if plan and plan.lower() in combo_rank else False)
             chain = convert_message_segment_to_chain(pic)
             if is_reply_enabled():
                 chain.insert(0, Comp.Reply(id=event.message_obj.message_id))
@@ -109,7 +116,7 @@ async def table_pfm_handler(event: AstrMessageEvent):
         if f'{ver}{plan}' == '真将':
             yield event.plain_result('真系没有真将哦')
             return
-        pic = await draw_plate_table(qqid, ver, plan)
+        pic = await draw_plate_table(qqid=qqid, version=ver, plan=plan)
         chain = convert_message_segment_to_chain(pic)
         if is_reply_enabled():
             chain.insert(0, Comp.Reply(id=event.message_obj.message_id))
@@ -121,14 +128,9 @@ async def table_pfm_handler(event: AstrMessageEvent):
 
 async def rise_score_handler(event: AstrMessageEvent):
     """我要在x+上x分命令处理"""
-    qqid = event.get_sender_id()
+    qqid = None
     message_str = event.message_str.strip()
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
     # 匹配正则表达式
     match = re.match(r'^我要在?([0-9]+\+?)?[上加\+]([0-9]+)?分\s?(.+)?', message_str)
     username = None
@@ -150,7 +152,13 @@ async def rise_score_handler(event: AstrMessageEvent):
         username = match.group(3).strip()
     if username:
         qqid = None
-        
+    else:
+        identity = await _resolve_query_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
+
     data = await rise_score_data(qqid, username, rating, score)
     chain = convert_message_segment_to_chain(data)
     if is_reply_enabled():
@@ -160,14 +168,9 @@ async def rise_score_handler(event: AstrMessageEvent):
 
 async def plate_process_handler(event: AstrMessageEvent):
     """牌子进度命令处理"""
-    qqid = event.get_sender_id()
+    qqid = None
     message_str = event.message_str.strip()
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
     # 匹配正则表达式
     match = re.match(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩])([極极将舞神者]舞?)进度\s?(.+)?', message_str)
     if not match:
@@ -185,6 +188,12 @@ async def plate_process_handler(event: AstrMessageEvent):
         username = match.group(3).strip()
     if username:
         qqid = None
+    else:
+        identity = await _resolve_query_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
 
     data = await player_plate_data(qqid, username, ver, plan)
     chain = convert_message_segment_to_chain(data)
@@ -195,14 +204,9 @@ async def plate_process_handler(event: AstrMessageEvent):
 
 async def level_process_handler(event: AstrMessageEvent):
     """等级进度命令处理"""
-    qqid = event.get_sender_id()
+    qqid = None
     message_str = event.message_str.strip()
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
     # 匹配正则表达式
     match = re.match(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?', message_str)
     if not match:
@@ -245,6 +249,12 @@ async def level_process_handler(event: AstrMessageEvent):
     
     if username:
         qqid = None
+    else:
+        identity = await _resolve_query_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
 
     data = await level_process_data(qqid, username, level, plan, category, int(page) if page else 1)
     chain = convert_message_segment_to_chain(data)
@@ -255,14 +265,9 @@ async def level_process_handler(event: AstrMessageEvent):
     
 async def level_achievement_list_handler(event: AstrMessageEvent):
     """分数列表命令处理"""
-    qqid = event.get_sender_id()
+    qqid = None
     message_str = event.message_str.strip()
-    
-    # 检查是否有 @ 消息
-    at_qqid = extract_at_qqid(event)
-    if at_qqid:
-        qqid = at_qqid
-    
+
     # 匹配正则表达式
     match = re.match(r'^([0-9]+\.?[0-9]?\+?)分数列表\s?([0-9]+)?\s?(.+)?', message_str)
     if not match:
@@ -287,6 +292,12 @@ async def level_achievement_list_handler(event: AstrMessageEvent):
 
     if username:
         qqid = None
+    else:
+        identity = await _resolve_query_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
 
     data = await level_achievement_list_data(qqid, username, rating, int(page) if page else 1)
     chain = convert_message_segment_to_chain(data)

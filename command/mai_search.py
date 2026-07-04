@@ -12,6 +12,7 @@ from ..command.mai_base import convert_message_segment_to_chain
 from ..libraries.image import image_to_base64, text_to_image
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import *
+from ..libraries.maimaidx_identity import resolve_sender_qq_optional
 from ..libraries.maimaidx_model import AliasStatus
 from ..libraries.maimaidx_music import guess, mai
 from ..libraries.maimaidx_music_info import draw_music_info
@@ -64,7 +65,7 @@ async def search_music_handler(event: AstrMessageEvent):
         return
     
     if len(result) == 1:
-        pic = await draw_music_info(result.random(), event.get_sender_id())
+        pic = await draw_music_info(result.random(), await resolve_sender_qq_optional(event))
         chain = convert_message_segment_to_chain(pic)
         yield event.chain_result(chain)
         return
@@ -422,7 +423,7 @@ async def search_alias_song_handler(event: AstrMessageEvent):
         else:
             music = mai.total_list.by_id(str(alias_data[0].SongID))
             if music:
-                pic = await draw_music_info(music, event.get_sender_id())
+                pic = await draw_music_info(music, await resolve_sender_qq_optional(event))
                 chain = convert_message_segment_to_chain(pic)
                 chain.insert(0, Comp.Plain('您要找的是不是：'))
                 yield event.chain_result(chain)
@@ -433,7 +434,7 @@ async def search_alias_song_handler(event: AstrMessageEvent):
     
     # id
     if name.isdigit() and (music := mai.total_list.by_id(name)):
-        pic = await draw_music_info(music, event.get_sender_id())
+        pic = await draw_music_info(music, await resolve_sender_qq_optional(event))
         chain = convert_message_segment_to_chain(pic)
         chain.insert(0, Comp.Plain('您要找的是不是：'))
         yield event.chain_result(chain)
@@ -442,7 +443,7 @@ async def search_alias_song_handler(event: AstrMessageEvent):
     if search_id := re.search(r'^id([0-9]*)$', name, re.IGNORECASE):
         music = mai.total_list.by_id(search_id.group(1))
         if music:
-            pic = await draw_music_info(music, event.get_sender_id())
+            pic = await draw_music_info(music, await resolve_sender_qq_optional(event))
             chain = convert_message_segment_to_chain(pic)
             chain.insert(0, Comp.Plain('您要找的是不是：'))
             yield event.chain_result(chain)
@@ -454,7 +455,7 @@ async def search_alias_song_handler(event: AstrMessageEvent):
         yield event.plain_result(error_msg)
         return
     elif len(result) == 1:
-        pic = await draw_music_info(result.random(), event.get_sender_id())
+        pic = await draw_music_info(result.random(), await resolve_sender_qq_optional(event))
         chain = convert_message_segment_to_chain(pic)
         chain.insert(0, Comp.Plain('您要找的是不是：'))
         yield event.chain_result(chain)
@@ -490,6 +491,6 @@ async def query_chart_handler(event: AstrMessageEvent):
         yield event.plain_result(f'未找到ID为「{id}」的乐曲')
         return
     
-    pic = await draw_music_info(music, event.get_sender_id())
+    pic = await draw_music_info(music, await resolve_sender_qq_optional(event))
     chain = convert_message_segment_to_chain(pic)
     yield event.chain_result(chain)

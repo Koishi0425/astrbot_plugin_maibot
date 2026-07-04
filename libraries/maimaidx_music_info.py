@@ -17,9 +17,10 @@ def newbestscore(song_id: str, lv: int, value: int, bestlist: List[ChartInfo]) -
 
 
 async def draw_music_info(
-    music: Music, 
-    qqid: Optional[int] = None, 
-    user: Optional[UserInfo] = None
+    music: Music,
+    qqid: Optional[int] = None,
+    user: Optional[UserInfo] = None,
+    username: Optional[str] = None
 ) -> MessageSegment:
     """
     查看谱面
@@ -35,9 +36,9 @@ async def draw_music_info(
     isfull = True
     bestlist: List[ChartInfo] = []
     try:
-        if qqid:
+        if qqid or username:
             if user is None:
-                player = await maiApi.query_user_b50(qqid=qqid)
+                player = await maiApi.query_user_b50(qqid=qqid, username=username)
             else:
                 player = user
             if music.basic_info.version == list(plate_to_dx_version.values())[-1]:
@@ -124,7 +125,7 @@ async def draw_music_info(
     return MessageSegment.image(image_to_base64(im))
 
 
-async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSegment]:
+async def draw_music_play_data(qqid: int = None, music_id: str = None, username: Optional[str] = None) -> Union[str, MessageSegment]:
     """
     谱面游玩
     
@@ -137,7 +138,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
     try:
         diff: List[Union[None, PlayInfoDev, PlayInfoDefault]]
         if maiApi.token:
-            data = await maiApi.query_user_post_dev(qqid=qqid, music_id=music_id)
+            data = await maiApi.query_user_post_dev(qqid=qqid, username=username, music_id=music_id)
             if not data:
                 raise MusicNotPlayError
 
@@ -148,7 +149,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
             dev = True
         else:
             version = list(set(_v for _v in plate_to_dx_version.values()))
-            data = await maiApi.query_user_plate(qqid=qqid, version=version)
+            data = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
 
             music = mai.total_list.by_id(music_id)
             _temp = [None for _ in music.ds]
@@ -278,11 +279,11 @@ def draw_rating(rating: str, path: Path) -> MessageSegment:
     return MessageSegment.image(image_to_base64(im))
 
 
-async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union[MessageSegment, str]:
+async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = False, username: Optional[str] = None) -> Union[MessageSegment, str]:
     """绘制定数表"""
     try:
         version = list(set(_v for _v in plate_to_dx_version.values()))
-        obj = await maiApi.query_user_plate(qqid=qqid, version=version)
+        obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
         
         statistics = {
             'clear': 0,
@@ -413,7 +414,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
     return msg
 
 
-async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageSegment, str]:
+async def draw_plate_table(qqid: int = None, version: str = None, plan: str = None, username: Optional[str] = None) -> Union[MessageSegment, str]:
     """
     绘制完成表
     
@@ -434,7 +435,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         plate_total_num = len(music_id_list)
         playerdata: List[PlayInfoDefault] = []
         
-        obj = await maiApi.query_user_plate(qqid=qqid, version=ver)
+        obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=ver)
         for _d in obj:
             if _d.song_id not in music_id_list:
                 continue

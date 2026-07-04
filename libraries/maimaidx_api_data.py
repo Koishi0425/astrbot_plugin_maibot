@@ -5,6 +5,7 @@ from aiohttp import ClientSession, ClientTimeout
 
 from .. import UUID, config_json
 from .maimaidx_error import *
+from .maimaidx_identity import is_numeric_qq
 from .maimaidx_model import *
 
 
@@ -142,6 +143,8 @@ class MaimaiAPI:
         """
         json = {}
         if qqid:
+            if not is_numeric_qq(qqid):
+                raise ValueError('qqid must be numeric')
             json['qq'] = qqid
         if username:
             json['username'] = username
@@ -168,6 +171,8 @@ class MaimaiAPI:
         """
         json = {}
         if qqid:
+            if not is_numeric_qq(qqid):
+                raise ValueError('qqid must be numeric')
             json['qq'] = qqid
         if username:
             json['username'] = username
@@ -193,6 +198,8 @@ class MaimaiAPI:
         """
         params = {}
         if qqid:
+            if not is_numeric_qq(qqid):
+                raise ValueError('qqid must be numeric')
             params['qq'] = qqid
         if username:
             params['username'] = username
@@ -219,6 +226,8 @@ class MaimaiAPI:
         """
         json = {}
         if qqid:
+            if not is_numeric_qq(qqid):
+                raise ValueError('qqid must be numeric')
             json['qq'] = qqid
         if username:
             json['username'] = username
@@ -352,6 +361,8 @@ class MaimaiAPI:
         """获取QQ头像"""
         async with ClientSession(timeout=ClientTimeout(total=30)) as session:
             if qqid:
+                if not is_numeric_qq(qqid):
+                    raise ValueError('qqid must be numeric')
                 params = {
                     'b': 'qq',
                     'nk': qqid,

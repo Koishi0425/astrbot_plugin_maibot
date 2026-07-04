@@ -302,6 +302,34 @@ class MaimaiDXPlugin(Star):
         async for result in update_data_handler(event, self.superusers):
             yield result
 
+    @filter.regex(r'^(更新舞萌资源|更新maimai资源|更新maimaiDX资源|更新maimaidx资源)$')
+    async def update_maimai_resources(self, event: AstrMessageEvent):
+        """更新舞萌静态资源"""
+        from .command.mai_resource import update_maimai_resources_handler
+        async for result in update_maimai_resources_handler(event, self.superusers):
+            yield result
+
+    @filter.regex(r'^(绑定QQ|绑定qq)\s*([1-9][0-9]{4,11})$')
+    async def bind_qq(self, event: AstrMessageEvent):
+        """绑定QQ号"""
+        from .command.mai_bind import bind_qq_handler
+        async for result in bind_qq_handler(event):
+            yield result
+
+    @filter.regex(r'^(查看QQ绑定|查看qq绑定)$')
+    async def query_qq_bind(self, event: AstrMessageEvent):
+        """查看QQ绑定"""
+        from .command.mai_bind import query_qq_bind_handler
+        async for result in query_qq_bind_handler(event):
+            yield result
+
+    @filter.regex(r'^(解绑QQ|解绑qq)$')
+    async def unbind_qq(self, event: AstrMessageEvent):
+        """解绑QQ号"""
+        from .command.mai_bind import unbind_qq_handler
+        async for result in unbind_qq_handler(event):
+            yield result
+
     @filter.regex(r'^(帮助maimaiDX|帮助maimaidx)$')
     async def maimaidxhelp(self, event: AstrMessageEvent):
         """帮助maimaiDX"""
