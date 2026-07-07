@@ -27,18 +27,17 @@ git clone https://github.com/ZhiheZier/astrbot_plugin_maimaidx.git
 
 ### 2. 下载静态资源
 
-推荐在插件安装并配置超级管理员后，由超级管理员在聊天中执行以下指令自动下载并安装静态资源：
+舞萌绘图运行时读取插件目录下的 `static/`。推荐在 AstrBot WebUI 插件配置中设置 `resource_local_path`（可选的本地资源包/目录）或 `resource_source_url` 后，由超级管理员在聊天中执行以下指令安装静态资源：
 
 ```text
+更新maimai数据
+或
 更新舞萌资源
 ```
 
-该指令会下载资源包并覆盖 `static` 资源文件，同时保留 `static/config.json`。
+`更新maimai数据` 与 `更新舞萌资源` 现在使用同一套完整更新流程：先刷新歌曲、牌子、别名与猜歌数据，再把资源安装或覆盖到 `static/`。如果配置了本地资源目录或 `.7z` 资源包，会优先使用本地来源；本地来源未配置或不可用时，才会使用 WebUI 中配置的资源 URL。配置全部由 AstrBot WebUI 管理，不再读取或写入 `static/config.json`。
 
-如需手动安装，也可以下载静态资源文件，解压后将 `static` 文件夹复制到插件根目录并覆盖（除了config.json）。
-
-- [Cloudreve私人云盘](https://cloud.yuzuchan.moe/f/nXt6/Resource.7z)
-- [onedrive](https://yuzuai-my.sharepoint.com/:u:/g/personal/yuzu_yuzuchan_moe/IQDRlCkUqPlaR409p6Gv_RK6AZ-dJaBtbgZoJMvFI4IJiYw?e=eu5f2h)
+本地资源可以是全量包、解压后的资源目录，或版本增量包。CN1.56 的增量包会被识别为 rating 数字素材并覆盖到 `static/mai/pic`。
 
 ### 3. 安装依赖
 
@@ -74,28 +73,14 @@ apt install fonts-wqy-microhei
 - `bot_name`: 机器人名称，用于在消息中显示（如：今日运势功能），默认为 "Bot"
 - `enable_reply`: 是否在多数指令回复中添加“引用消息”（Reply），默认为开启
 - `maimaidxtoken`: 查分器开发者 token（建议配置；目前牌子进度等功能需要 token）
-- `maimaidxaliaswhitelist`: 别名推送是否采用白名单（默认关闭）。开启后仅向已执行「开启别名推送」的群广播，可避免多群刷屏；关闭时为「全群推送 + disable 黑名单」
-
-#### 4.2 静态配置文件
-
-修改 `static/config.json` 文件：
-
-```json
-{
-    "maimaidxtoken": "",
-    "maimaidxproberproxy": false,
-    "maimaidxaliasproxy": false,
-    "maimaidxaliaspush": true,
-    "saveinmem": true
-}
-```
-
-配置说明：
-- `maimaidxtoken`: 查分器开发者 token（建议填写；否则牌子进度等功能会提示需要 token）
 - `maimaidxproberproxy`: 是否使用代理访问查分器 API
 - `maimaidxaliasproxy`: 是否使用代理访问别名库 API
 - `maimaidxaliaspush`: 是否开启别名推送
+- `maimaidxaliaswhitelist`: 别名推送是否采用白名单（默认关闭）。开启后仅向已执行「开启别名推送」的群广播，可避免多群刷屏；关闭时为「全群推送 + disable 黑名单」
 - `saveinmem`: 是否将图片保存在内存中（`false` 可节省内存）
+- `resource_local_path`: 可选的本地资源目录或 `.7z` 文件路径，仅作为更新来源；安装目标始终是 `static/`
+- `resource_source_url`: 本地资源不存在时使用的资源包 URL，可留空
+- `resource_check_on_startup`: 启动时检查关键资源是否缺失
 
 ### 5. 配置超级管理员
 
@@ -145,7 +130,8 @@ apt install fonts-wqy-microhei
 - `开启别名推送` / `关闭别名推送` - 开启/关闭别名推送
 
 ### 管理命令（需要超级管理员权限）
-- `更新maimai数据` - 更新歌曲数据
+- `更新maimai数据` - 更新歌曲/牌子/别名数据，并在配置了资源来源时同步更新静态资源
+- `更新舞萌资源` - 兼容旧资源更新入口，同样执行完整更新；别名：`更新maimai资源`、`更新maimaiDX资源`、`更新maimaidx资源`
 - `更新定数表` - 更新定数表
 - `更新完成表` - 更新完成表
 - `更新别名库` - 更新别名库

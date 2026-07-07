@@ -127,7 +127,11 @@ async def update_plate_table() -> str:
             if _v in platecn:
                 _v = platecn[_v]
             ver, _ver = version_map.get(_v, ([plate_to_dx_version.get(_v)], _v))
-            
+
+            if _ver not in mai.total_plate_id_list:
+                available = '，'.join(mai.total_plate_id_list.keys())
+                raise KeyError(f'完成表版本「{_ver}」不存在，可用版本：{available}')
+
             music_id_list = mai.total_plate_id_list[_ver]
             music = mai.total_list.by_id_list(music_id_list)
             ralv = copy.deepcopy(rlv)

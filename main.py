@@ -11,10 +11,36 @@ from pathlib import Path
 
 from . import Root, log, loga, ratingdir, platedir, plate_to_dx_version, platecn, static, _BOTNAME
 from .libraries.maimai_best_50 import ScoreBaseImage
-from .libraries.maimaidx_api_data import maiApi
+from .libraries.maimaidx_api_data import MaiConfig, maiApi
 from .libraries.maimaidx_music import mai
 from .command.mai_alias import ws_alias_server
 import sys
+
+
+def _config_get(config: dict, key: str, default=None):
+    if key in config:
+        return config.get(key, default)
+    for section in ("basic", "prober", "alias", "resource"):
+        section_config = config.get(section)
+        if isinstance(section_config, dict) and key in section_config:
+            return section_config.get(key, default)
+    return default
+
+
+def _config_bool(config: dict, key: str, default: bool) -> bool:
+    value = _config_get(config, key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off", "关闭", "否"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "开启", "是"}:
+            return True
+    return bool(value)
+
 
 @register("astrbot_plugin_maimaidx", "ZhiheZier", "maimaiDX插件", "1.1.1")
 class MaimaiDXPlugin(Star):
@@ -29,10 +55,19 @@ class MaimaiDXPlugin(Star):
         self.data_file = static / "disabled_groups.json"  # 数据文件路径
         
         # 从插件配置中读取 bot 名称并设置到 __init__.py
-        bot_name = self.config.get("bot_name", "Bot")
-        enable_reply = bool(self.config.get("enable_reply", True))
-        # 从插件配置中读取开发者 token（优先于 static/config.json），避免将 token 写入仓库文件
-        plugin_token = str(self.config.get("maimaidxtoken", "") or "").strip()
+        bot_name = _config_get(self.config, "bot_name", "Bot")
+        enable_reply = _config_bool(self.config, "enable_reply", True)
+        maiApi.configure(MaiConfig(
+            maimaidxtoken=str(_config_get(self.config, "maimaidxtoken", "") or "").strip() or None,
+            maimaidxproberproxy=_config_bool(self.config, "maimaidxproberproxy", False),
+            maimaidxaliasproxy=_config_bool(self.config, "maimaidxaliasproxy", False),
+            maimaidxaliaspush=_config_bool(self.config, "maimaidxaliaspush", True),
+            maimaidxaliaswhitelist=_config_bool(self.config, "maimaidxaliaswhitelist", False),
+            saveinmem=_config_bool(self.config, "saveinmem", True),
+            resource_local_path=str(_config_get(self.config, "resource_local_path", "") or "").strip(),
+            resource_source_url=str(_config_get(self.config, "resource_source_url", "") or "").strip(),
+            resource_check_on_startup=_config_bool(self.config, "resource_check_on_startup", True),
+        ))
         pkg_name = __name__.rsplit('.', 1)[0]  # 获取包名，例如 'myplugins.astrbot_plugin_maimaidx'
         if pkg_name in sys.modules:
             module = sys.modules[pkg_name]
@@ -42,13 +77,6 @@ class MaimaiDXPlugin(Star):
             setattr(module, '_ENABLE_REPLY', enable_reply)
             log.info(f'已设置 bot 名称: {bot_name}')
             log.info(f'引用回复（Reply）: {"开启" if enable_reply else "关闭"}')
-
-        # 注入 token 并立即生效（不落盘）
-        if plugin_token:
-            maiApi.config.maimaidxtoken = plugin_token
-
-        if 'maimaidxaliaswhitelist' in self.config:
-            maiApi.config.maimaidxaliaswhitelist = bool(self.config.get('maimaidxaliaswhitelist'))
         
         # 从 astrbot 配置文件中获取管理员ID列表
         # 根据文档：https://docs.astrbot.app/dev/star/plugin.html
@@ -184,7 +212,19 @@ class MaimaiDXPlugin(Star):
     def _perform_initial_checks(self):
         """执行对目录和数据的初始检查"""
         # 检查定数表文件夹
-        if not list(ratingdir.iterdir()):
+        if maiApi.config.resource_check_on_startup:
+            try:
+                from .libraries.maimaidx_resource import check_resource_status
+
+                resource_status = check_resource_status()
+                for path in resource_status.missing_paths:
+                    log.warning(f'舞萌资源缺失：{path}')
+                for warning in resource_status.warnings:
+                    log.warning(f'舞萌资源警告：{warning}')
+            except Exception as e:
+                log.warning(f'检查舞萌资源状态失败: {e}')
+
+        if not ratingdir.exists() or not list(ratingdir.iterdir()):
             log.warning(
                 '注意！注意！检测到定数表文件夹为空！'
                 '可能导致「定数表」「完成表」指令无法使用，'
@@ -193,7 +233,7 @@ class MaimaiDXPlugin(Star):
         
         # 检查完成表文件夹
         plate_list = [name for name in list(plate_to_dx_version.keys())[1:]]
-        platedir_list = [f.name.split('.')[0] for f in platedir.iterdir()]
+        platedir_list = [f.name.split('.')[0] for f in platedir.iterdir()] if platedir.exists() else []
         cn_list = [name for name in list(platecn.keys())]
         notin = set(plate_list) - set(platedir_list) - set(cn_list)
         if notin:
@@ -297,16 +337,16 @@ class MaimaiDXPlugin(Star):
     # 基础命令
     @filter.command("更新maimai数据")
     async def update_data(self, event: AstrMessageEvent):
-        """更新maimai数据"""
-        from .command.mai_base import update_data_handler
-        async for result in update_data_handler(event, self.superusers):
+        """更新maimai数据与静态资源"""
+        from .command.mai_update import update_maimai_all_handler
+        async for result in update_maimai_all_handler(event, self.superusers, maiApi.config):
             yield result
 
     @filter.regex(r'^(更新舞萌资源|更新maimai资源|更新maimaiDX资源|更新maimaidx资源)$')
     async def update_maimai_resources(self, event: AstrMessageEvent):
-        """更新舞萌静态资源"""
-        from .command.mai_resource import update_maimai_resources_handler
-        async for result in update_maimai_resources_handler(event, self.superusers):
+        """更新maimai数据与静态资源，兼容旧资源更新指令"""
+        from .command.mai_update import update_maimai_all_handler
+        async for result in update_maimai_all_handler(event, self.superusers, maiApi.config, require_resource_source=True):
             yield result
 
     @filter.regex(r'^(绑定QQ|绑定qq)\s*([1-9][0-9]{4,11})$')
@@ -628,7 +668,7 @@ class MaimaiDXPlugin(Star):
         async for result in rise_score_handler(event):
             yield result
 
-    @filter.regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜])([極极将舞神者]舞?)进度\s?(.+)?$')
+    @filter.regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩])([極极将舞神者]舞?)进度\s?(.+)?$')
     async def plate_process(self, event: AstrMessageEvent):
         """牌子进度命令"""
         group_id = event.message_obj.group_id

@@ -1,9 +1,8 @@
-import json
 from typing import Any, Dict
 
 from aiohttp import ClientSession, ClientTimeout
 
-from .. import UUID, config_json
+from .. import UUID
 from .maimaidx_error import *
 from .maimaidx_identity import is_numeric_qq
 from .maimaidx_model import *
@@ -18,6 +17,9 @@ class MaiConfig(BaseModel):
     # True：仅向「开启别名推送」的群广播；False：向所有群广播，但排除 disable 列表（默认，兼容旧行为）
     maimaidxaliaswhitelist: bool = False
     saveinmem: Optional[bool] = True
+    resource_local_path: str = ""
+    resource_source_url: str = ""
+    resource_check_on_startup: bool = True
 
 
 class MaimaiAPI:
@@ -31,21 +33,36 @@ class MaimaiAPI:
     
     def __init__(self) -> None:
         """封装Api"""
-        self.config: MaiConfig = self.load_config()
+        self.config: MaiConfig = MaiConfig()
         self.headers = None
         self.token = None
         self.MaiProberProxyAPI = None
         self.MaiAliasProxyAPI = None
+        self.load_token_proxy()
     
     def load_config(self) -> MaiConfig:
-        return MaiConfig.model_validate(json.load(open(config_json, 'r', encoding='utf-8')))
+        """Return defaults for old callers.
+
+        Runtime configuration is injected from AstrBot WebUI by the plugin
+        entrypoint. static/config.json is intentionally no longer read.
+        """
+        return MaiConfig()
+
+    def configure(self, config: Union[MaiConfig, Dict[str, Any], None] = None) -> None:
+        if isinstance(config, MaiConfig):
+            self.config = config
+        else:
+            self.config = MaiConfig.model_validate(config or {})
+        self.load_token_proxy()
     
     def load_token_proxy(self) -> None:
         self.MaiProberProxyAPI = self.MaiProberAPI if not self.config.maimaidxproberproxy else self.MaiProxyAPI + '/maimaidxprober'
         self.MaiAliasProxyAPI = self.MaiAliasAPI if not self.config.maimaidxaliasproxy else self.MaiProxyAPI + '/maimaidxaliases'
-        self.token = self.config.maimaidxtoken
+        self.token = (self.config.maimaidxtoken or '').strip()
         if self.token:
             self.headers = {'developer-token': self.token}
+        else:
+            self.headers = None
     
     
     async def _requestalias(self, method: str, endpoint: str, **kwargs) -> APIResult:

@@ -1,27 +1,92 @@
 {
-  "bot_name": {
-    "description": "机器人名称",
-    "hint": "用于在消息中显示（如：今日运势功能）",
-    "type": "string",
-    "default": "Bot"
+  "basic": {
+    "description": "基本设置",
+    "type": "object",
+    "items": {
+      "bot_name": {
+        "description": "机器人名称",
+        "hint": "用于今日运势等消息中的显示名称。",
+        "type": "string",
+        "default": "Bot"
+      },
+      "enable_reply": {
+        "description": "引用回复",
+        "hint": "是否在多数查询结果前添加引用回复。",
+        "type": "bool",
+        "default": true
+      },
+      "saveinmem": {
+        "description": "图片缓存到内存",
+        "hint": "开启后部分图片生成更快，但会占用更多内存。",
+        "type": "bool",
+        "default": true
+      }
+    }
   },
-  "enable_reply": {
-    "description": "引用回复",
-    "hint": "是否在多数指令回复中添加“引用消息”（Reply）。关闭可减少引用/提及效果。",
-    "type": "bool",
-    "default": true
+  "prober": {
+    "description": "查分器设置",
+    "type": "object",
+    "items": {
+      "maimaidxtoken": {
+        "description": "Diving-Fish 开发者 Token",
+        "hint": "用于访问需要开发者 token 的查分器接口。",
+        "type": "string",
+        "default": ""
+      },
+      "maimaidxproberproxy": {
+        "description": "查分器代理",
+        "hint": "是否通过代理访问 Diving-Fish 查分器 API。",
+        "type": "bool",
+        "default": false
+      }
+    }
   },
-  "maimaidxtoken": {
-    "description": "查分器开发者 Token",
-    "hint": "用于访问查分器接口",
-    "type": "string",
-    "default": ""
+  "alias": {
+    "description": "别名设置",
+    "type": "object",
+    "items": {
+      "maimaidxaliaspush": {
+        "description": "别名推送",
+        "hint": "是否启用别名投票推送 WebSocket。",
+        "type": "bool",
+        "default": true
+      },
+      "maimaidxaliasproxy": {
+        "description": "别名服务代理",
+        "hint": "是否通过代理访问别名服务器。",
+        "type": "bool",
+        "default": false
+      },
+      "maimaidxaliaswhitelist": {
+        "description": "别名推送白名单模式",
+        "hint": "开启后仅向已执行“开启别名推送”的群广播；关闭则保持旧逻辑。",
+        "type": "bool",
+        "default": false
+      }
+    }
   },
-  "maimaidxaliaswhitelist": {
-    "description": "别名推送白名单",
-    "hint": "开启后仅向已执行「开启别名推送」的群发送别名广播；关闭则保持原逻辑（全群推送，排除黑名单）。",
-    "type": "bool",
-    "default": false
+  "resource": {
+    "description": "资源设置",
+    "type": "object",
+    "items": {
+      "resource_local_path": {
+        "description": "本地资源路径",
+        "hint": "可选的本地资源目录或 .7z 文件，仅作为“更新舞萌资源”的导入来源。相对路径基于插件根目录，安装目标始终是 static。",
+        "type": "string",
+        "default": ""
+      },
+      "resource_source_url": {
+        "description": "资源包 URL",
+        "hint": "未配置本地资源或本地资源不可用时使用的远程资源包 URL。没有稳定链接时可留空。",
+        "type": "string",
+        "default": ""
+      },
+      "resource_check_on_startup": {
+        "description": "启动时检查资源",
+        "hint": "启动时检查关键静态资源是否缺失，并在日志中提示。",
+        "type": "bool",
+        "default": true
+      }
+    }
   }
 }
-

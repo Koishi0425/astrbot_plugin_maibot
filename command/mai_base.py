@@ -94,16 +94,12 @@ def convert_message_segment_to_chain(msg):
     return [Comp.Plain(str(msg))]
 
 
-async def update_data_handler(event: AstrMessageEvent, superusers: list = None):
-    """更新maimai数据"""
-    sender_id = event.get_sender_id()
-    if superusers and str(sender_id) not in superusers:
-        yield event.plain_result('仅允许超级管理员执行此操作')
-        return
-    
-    await mai.get_music()
-    await mai.get_music_alias()
-    yield event.plain_result('maimai数据更新完成')
+async def update_data_handler(event: AstrMessageEvent, superusers: list = None, config=None):
+    """更新maimai数据与静态资源。"""
+    from .mai_update import update_maimai_all_handler
+
+    async for result in update_maimai_all_handler(event, superusers, config, require_resource_source=False):
+        yield result
 
 
 async def maimaidxhelp_handler(event: AstrMessageEvent):

@@ -2,7 +2,12 @@ import uuid
 from pathlib import Path
 from typing import Dict, List
 
-from astrbot.api import logger
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 ### 必须
 log = logger
@@ -86,7 +91,7 @@ Root: Path = Path(__file__).parent
 static: Path = Root / 'static'
 
 arcades_json: Path = static / 'arcades.json'                    # 机厅
-config_json: Path = static / 'config.json'                      # token
+config_json: Path = static / 'config.json'                      # legacy path; runtime config comes from AstrBot WebUI
 alias_file: Path = static / 'music_alias.json'                  # 别名暂存文件
 local_alias_file: Path = static / 'local_music_alias.json'      # 本地别名文件
 music_file: Path = static / 'music_data.json'                   # 曲目暂存文件
@@ -226,8 +231,8 @@ version_map = {
     '祝': ([plate_to_dx_version['祭']], '祭&祝'),
     '双': ([plate_to_dx_version['双']], '双&宴'),
     '宴': ([plate_to_dx_version['双']], '双&宴'),
-    '镜': ([plate_to_dx_version['镜']], '镜&彩'),
-    '彩': ([plate_to_dx_version['镜']], '镜&彩')
+    '镜': ([plate_to_dx_version['镜']], '镜'),
+    '彩': ([plate_to_dx_version['彩']], '彩')
 }
 platecn = {
     '晓': '暁',
