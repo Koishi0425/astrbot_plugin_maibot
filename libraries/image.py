@@ -120,7 +120,7 @@ def music_picture(music_id: Union[int, str]) -> Path:
         for _id in [music_id + 10000, music_id - 10000]:
             if (_path := coverdir / f'{_id}.png').exists():
                 return _path
-    return coverdir / '11000.png'
+    return coverdir / '0.png'
 
 
 def text_to_image(text: str) -> Image.Image:
