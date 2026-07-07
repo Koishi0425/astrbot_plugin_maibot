@@ -491,12 +491,13 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
 
-        im.alpha_composite(Image.open(maimaidir / 'plate_num.png'), (185, 20))
+        progress_bg = 'plate_progress_wu.png' if version in ['霸', '舞'] else 'plate_progress.png'
+        im.alpha_composite(Image.open(maimaidir / progress_bg), (175, 20))
         plate_name = f'{version}{"極" if plan == "极" else plan}.png'
         plate_path = plate_versiondir / plate_name
         im.alpha_composite(
             Image.open(plate_path).resize((1000, 161)),
-            (200, 35)
+            (200, 45)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
         y = 245

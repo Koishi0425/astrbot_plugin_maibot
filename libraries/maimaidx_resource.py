@@ -51,6 +51,8 @@ EXPECTED_RESOURCE_PATHS = (
     maimaidir / "unfinished_1.png",
     maimaidir / "complete_2.png",
     maimaidir / "unfinished_2.png",
+    maimaidir / "plate_progress.png",
+    maimaidir / "plate_progress_wu.png",
     maimaidir / "UI_Icon_509506.png",
     maimaidir / "UI_Plate_550101.png",
     *(static / "font" / name for name in FONT_NAMES),
