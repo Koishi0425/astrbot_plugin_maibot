@@ -34,6 +34,7 @@ EXPECTED_RESOURCE_PATHS = (
     maimaidir,
     themepicdir,
     coverdir,
+    coverdir / "0.png",
     ratingdir,
     platedir,
     plate_versiondir,
