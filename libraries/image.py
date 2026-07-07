@@ -110,16 +110,19 @@ def music_picture(music_id: Union[int, str]) -> Path:
         `Path`
     """
     music_id = int(music_id)
-    if (_path := coverdir / f'{music_id}.png').exists():
-        return _path
+    candidate_ids = [music_id]
     if music_id > 100000:
-        music_id -= 100000
-        if (_path := coverdir / f'{music_id}.png').exists():
+        candidate_ids.append(music_id - 100000)
+
+    for candidate_id in tuple(candidate_ids):
+        short_id = candidate_id % 10000
+        if short_id and short_id != candidate_id:
+            candidate_ids.append(short_id)
+
+    for candidate_id in dict.fromkeys(candidate_ids):
+        if (_path := coverdir / f'{candidate_id}.png').exists():
             return _path
-    if 1000 < music_id < 10000 or 10000 < music_id <= 11000:
-        for _id in [music_id + 10000, music_id - 10000]:
-            if (_path := coverdir / f'{_id}.png').exists():
-                return _path
+
     return coverdir / '0.png'
 
 
