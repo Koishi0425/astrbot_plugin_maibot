@@ -13,6 +13,7 @@ from .maimai_best_50 import ScoreBaseImage, changeColumnWidth, coloumWidth, comp
 from .maimaidx_api_data import *
 from .maimaidx_model import PlanInfo, PlayInfoDefault, PlayInfoDev, RaMusic
 from .maimaidx_music import Music, mai
+from .maimaidx_resource import format_missing_resource_error
 from .tool import run_chrome_to_base64
 
 Filter = Tuple[
@@ -136,13 +137,13 @@ class DrawScore(ScoreBaseImage):
             x = 200 if isdx else 700
             y += 140 if index != 0 else 0
             
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{_d.rate}.png').resize((63, 28))
+            rate = Image.open(themepicdir / f'UI_TTR_Rank_{_d.rate}.png').resize((63, 28))
             
             self._im.alpha_composite(self._rise[_d.level_index], (x + 30, y))
             self._im.alpha_composite(Image.open(music_picture(_d.song_id)).resize((80, 80)), (x + 55, y + 40))
             self._im.alpha_composite(Image.open(maimaidir / f'{_d.type.upper()}.png').resize((60, 22)), (x + 240, y + 114))
             if _d.oldrate:
-                oldrate = Image.open(maimaidir / f'UI_TTR_Rank_{_d.oldrate}.png').resize((63, 28))
+                oldrate = Image.open(themepicdir / f'UI_TTR_Rank_{_d.oldrate}.png').resize((63, 28))
                 self._im.alpha_composite(oldrate, (x + 145, y + 82))
             self._im.alpha_composite(rate, (x + 305, y + 82))
             
@@ -433,6 +434,9 @@ async def rise_score_data(
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'
@@ -735,6 +739,9 @@ async def level_process_data(
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'
@@ -810,6 +817,9 @@ async def level_achievement_list_data(
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'

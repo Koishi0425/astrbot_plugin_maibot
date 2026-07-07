@@ -9,7 +9,7 @@ import aiofiles
 import aiohttp
 import py7zr
 
-from .. import Root, coverdir, log, maimaidir, platedir, ratingdir, static
+from .. import Root, coverdir, log, maimaidir, platedir, ratingdir, static, themepicdir
 
 
 RESOURCE_ARCHIVE_NAME = "Resource.7z"
@@ -21,9 +21,24 @@ FONT_COMPAT_NAMES = (
 )
 EXPECTED_RESOURCE_PATHS = (
     maimaidir,
+    themepicdir,
     coverdir,
     ratingdir,
     platedir,
+    themepicdir / "b50.png",
+    themepicdir / "title.png",
+    themepicdir / "title_lengthen.png",
+    themepicdir / "chart_info.png",
+    themepicdir / "play_info.png",
+    themepicdir / "logo.png",
+    themepicdir / "design.png",
+    maimaidir / "complete.png",
+    maimaidir / "complete_1.png",
+    maimaidir / "unfinished_1.png",
+    maimaidir / "complete_2.png",
+    maimaidir / "unfinished_2.png",
+    maimaidir / "UI_Icon_509506.png",
+    maimaidir / "UI_Plate_550101.png",
     *(static / name for name in FONT_COMPAT_NAMES),
 )
 
@@ -135,6 +150,15 @@ def _find_static_source(extract_dir: Path) -> Path:
     raise ResourceInstallError("资源包结构不匹配：未找到 static 资源目录")
 
 
+def _is_supported_full_static(source_static: Path) -> bool:
+    required = (
+        source_static / "mai" / "pic" / "prism_plus" / "b50.png",
+        source_static / "mai" / "pic" / "prism_plus" / "title.png",
+        source_static / "mai" / "pic" / "prism_plus" / "title_lengthen.png",
+    )
+    return all(path.is_file() for path in required)
+
+
 def _copy_file(src: Path, dst: Path, result: ResourceInstallResult) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
@@ -167,7 +191,7 @@ def _copy_flat_files(source: Path, target: Path, names: Iterable[str], result: R
 
 
 def _apply_layout_compatibility(result: ResourceInstallResult) -> None:
-    """Keep old rendering paths working with newer upstream resource layout."""
+    """Flatten upstream static/font, rating_table and plate_table layouts."""
     font_dir = static / "font"
     if font_dir.is_dir():
         _copy_flat_files(font_dir, static, FONT_COMPAT_NAMES, result)
@@ -211,6 +235,8 @@ def _install_resource_dir(source: Path, result: ResourceInstallResult) -> None:
             _copy_rating_digit_update(rating_update, result)
             return
         raise
+    if not _is_supported_full_static(source_static):
+        raise ResourceInstallError("资源结构不匹配：缺少新版 prism_plus 主题素材")
     _copy_full_static(source_static, result)
 
 
@@ -275,9 +301,10 @@ def _find_local_candidates(path: Path) -> List[Path]:
             valid_candidates.append(candidate)
         else:
             try:
-                _find_static_source(candidate)
-                valid_candidates.append(candidate)
-                continue
+                source_static = _find_static_source(candidate)
+                if _is_supported_full_static(source_static):
+                    valid_candidates.append(candidate)
+                    continue
             except ResourceInstallError:
                 pass
             if _is_rating_digit_update(candidate) or (
@@ -317,6 +344,16 @@ def check_resource_status() -> ResourceStatus:
         )
 
     return status
+
+
+def format_missing_resource_error(error: FileNotFoundError) -> str:
+    filename = getattr(error, "filename", None)
+    path = Path(filename) if filename else None
+    resource = _resource_path(path) if path else str(error)
+    return (
+        f"舞萌静态资源缺少关键文件：{resource}\n"
+        "请联系Bot管理员执行「更新maimai数据」，并确认 static 资源已更新到当前街机版本。"
+    )
 
 
 async def install_maimai_resources(

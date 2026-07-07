@@ -1,8 +1,9 @@
 import copy
 
-from .. import MessageSegment, get_botname
+from .. import MessageSegment, get_botname, themepicdir
 from .image import rounded_corners
 from .maimai_best_50 import *
+from .maimaidx_resource import format_missing_resource_error
 from .maimaidx_music import Music, mai
 
 
@@ -54,14 +55,14 @@ async def draw_music_info(
     except Exception:
         calc = False
 
-    im = Image.open(maimaidir / 'song_bg.png').convert('RGBA')
+    im = Image.open(themepicdir / 'chart_info.png').convert('RGBA')
     dr = ImageDraw.Draw(im)
     mr = DrawText(dr, SIYUAN)
     tb = DrawText(dr, TBFONT)
 
     default_color = (124, 130, 255, 255)
 
-    im.alpha_composite(Image.open(maimaidir / 'logo.png').resize((249, 120)), (65, 25))
+    im.alpha_composite(Image.open(themepicdir / 'logo.png').resize((249, 120)), (65, 25))
     if music.basic_info.is_new:
         im.alpha_composite(Image.open(maimaidir / 'UI_CMN_TabTitle_NewSong.png').resize((249, 120)), (940, 100))
     songbg = Image.open(music_picture(music.id)).resize((280, 280))
@@ -162,16 +163,16 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
                 raise MusicNotPlayError
             dev = False
 
-        im = Image.open(maimaidir / 'info_bg.png').convert('RGBA')
+        im = Image.open(themepicdir / 'play_info.png').convert('RGBA')
     
         dr = ImageDraw.Draw(im)
         tb = DrawText(dr, TBFONT)
         mr = DrawText(dr, SIYUAN)
 
-        im.alpha_composite(Image.open(maimaidir / 'logo.png').resize((249, 120)), (0, 34))
+        im.alpha_composite(Image.open(themepicdir / 'logo.png').resize((249, 120)), (0, 34))
         cover = Image.open(music_picture(music_id))
         im.alpha_composite(cover.resize((300, 300)), (100, 260))
-        im.alpha_composite(Image.open(maimaidir / f'info-{category[music.basic_info.genre]}.png'), (100, 260))
+        im.alpha_composite(Image.open(maimaidir / f'info_{category[music.basic_info.genre]}.png'), (100, 260))
         im.alpha_composite(Image.open(maimaidir / f'{music.basic_info.version}.png').resize((183, 90)), (295, 205))
         im.alpha_composite(Image.open(maimaidir / f'{music.type}.png').resize((55, 20)), (350, 560))
         
@@ -189,9 +190,9 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
 
         y = 100
         for num, info in enumerate(diff):
-            im.alpha_composite(Image.open(maimaidir / f'd-{num}.png'), (650, 235 + y * num))
+            im.alpha_composite(Image.open(maimaidir / f'd_{num}.png'), (650, 235 + y * num))
             if info:
-                im.alpha_composite(Image.open(maimaidir / 'ra-dx.png'), (850, 272 + y * num))
+                im.alpha_composite(Image.open(themepicdir / 'ra_dx.png'), (850, 272 + y * num))
                 if dev:
                     dxscore = info.dxScore
                     _dxscore = sum(music.charts[num].notes) * 3
@@ -219,7 +220,7 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
                     )
                 im.alpha_composite(Image.open(maimaidir / 'ra.png'), (1350, 405 + y * num))
                 im.alpha_composite(
-                    Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((100, 45)), 
+                    Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((100, 45)),
                     (737, 272 + y * num)
                 )
 
@@ -245,6 +246,9 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'
@@ -339,9 +343,9 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
         lvlist = mai.total_level_data[rating]
         lvnum = sum([len(v) for v in lvlist.values()])
         
-        rating_bg = Image.open(maimaidir / 'rating_bg.png')
-        unfinished_bg = Image.open(maimaidir / 'unfinished_bg.png')
-        complete_bg = Image.open(maimaidir / 'complete_bg.png')
+        rating_bg = Image.open(maimaidir / 'complete.png')
+        unfinished_bg = Image.open(maimaidir / 'unfinished_1.png')
+        complete_bg = Image.open(maimaidir / 'complete_1.png')
         
         bg = ratingdir / f'{rating}.png'
         
@@ -350,7 +354,7 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
         sy = DrawText(dr, SIYUAN)
         tb = DrawText(dr, TBFONT)
         
-        im.alpha_composite(rating_bg, (600, 25))
+        im.alpha_composite(rating_bg, (251, 190))
         sy.draw(305, 60, 65, f'Level.{rating}', (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
         sy.draw(305, 130, 65, '定数表', (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
         tb.draw(700, 127, 45, lvnum, (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
@@ -379,7 +383,7 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
                         score = fromid[music.id][music.lv]['achievements']
                         achievements_fc_list.append(score)
                         rate = computeRa(music.ds, score, onlyrate=True)
-                        rank = Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((78, 35))
+                        rank = Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((78, 35))
                         if score >= 100:
                             im.alpha_composite(complete_bg, (x + 2, y - 18))
                         else:
@@ -408,6 +412,9 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'
@@ -467,9 +474,9 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
                 continue
             ra[_d.table_level[3]][str(_d.song_id)][_d.level_index] = _d
         
-        finished_bg = [Image.open(maimaidir / f't-{_}.png') for _ in range(4)]
-        unfinished_bg = Image.open(maimaidir / 'unfinished_bg_2.png')
-        complete_bg = Image.open(maimaidir / 'complete_bg_2.png')
+        finished_bg = [Image.open(maimaidir / f't_{_}.png') for _ in range(4)]
+        unfinished_bg = Image.open(maimaidir / 'unfinished_2.png')
+        complete_bg = Image.open(maimaidir / 'complete_2.png')
 
         im = Image.open(platedir / f'{version}.png')
         draw = ImageDraw.Draw(im)
@@ -538,7 +545,7 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
                         if n == 3:
                             im.alpha_composite(complete_bg if play.achievements >= 100 else unfinished_bg, (x, y))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((102, 46))
+                            rank = Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((102, 46))
                             im.alpha_composite(rank, (x - 1, y + 15))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -613,6 +620,9 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
         TokenNotFoundError,
     ) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'

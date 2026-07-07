@@ -11,6 +11,7 @@ from .maimaidx_api_data import maiApi
 from .maimaidx_error import *
 from .maimaidx_model import ChartInfo, PlayInfoDefault, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
+from .maimaidx_resource import format_missing_resource_error
 
 
 class ScoreBaseImage:
@@ -66,9 +67,9 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        cls.title_bg = Image.open(maimaidir / 'title.png')
-        cls.title_lengthen_bg = Image.open(maimaidir / 'title-lengthen.png')
-        cls.design_bg = Image.open(maimaidir / 'design.png')
+        cls.title_bg = Image.open(themepicdir / 'title.png')
+        cls.title_lengthen_bg = Image.open(themepicdir / 'title_lengthen.png')
+        cls.design_bg = Image.open(themepicdir / 'design.png')
         cls.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         cls.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         cls.pattern_bg = Image.open(maimaidir / 'pattern.png')
@@ -100,9 +101,9 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        self.title_bg = Image.open(maimaidir / 'title.png')
-        self.title_lengthen_bg = Image.open(maimaidir / 'title-lengthen.png')
-        self.design_bg = Image.open(maimaidir / 'design.png')
+        self.title_bg = Image.open(themepicdir / 'title.png')
+        self.title_lengthen_bg = Image.open(themepicdir / 'title_lengthen.png')
+        self.design_bg = Image.open(themepicdir / 'design.png')
         self.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         self.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         self.pattern_bg = Image.open(maimaidir / 'pattern.png')
@@ -148,9 +149,9 @@ class ScoreBaseImage:
             cover = Image.open(music_picture(info.song_id)).resize((75, 75))
             version = Image.open(maimaidir / f'{info.type.upper()}.png').resize((37, 14))
             if info.rate.islower():
-                rate = Image.open(maimaidir / f'UI_TTR_Rank_{score_Rank_l[info.rate]}.png').resize((63, 28))
+                rate = Image.open(themepicdir / f'UI_TTR_Rank_{score_Rank_l[info.rate]}.png').resize((63, 28))
             else:
-                rate = Image.open(maimaidir / f'UI_TTR_Rank_{info.rate}.png').resize((63, 28))
+                rate = Image.open(themepicdir / f'UI_TTR_Rank_{info.rate}.png').resize((63, 28))
 
             self._im.alpha_composite(self._diff[info.level_index], (x, y))
             self._im.alpha_composite(cover, (x + 12, y + 12))
@@ -192,7 +193,7 @@ class ScoreBaseImage:
 class DrawBest(ScoreBaseImage):
 
     def __init__(self, UserInfo: UserInfo, qqid: Optional[Union[int, str]] = None) -> None:
-        super().__init__(Image.open(maimaidir / 'b50_bg.png').convert('RGBA'))
+        super().__init__(Image.open(themepicdir / 'b50.png').convert('RGBA'))
         self.userName = UserInfo.nickname
         self.plate = UserInfo.plate
         self.addRating = UserInfo.additional_rating
@@ -247,8 +248,8 @@ class DrawBest(ScoreBaseImage):
 
     async def draw(self) -> Image.Image:
         
-        logo = Image.open(maimaidir / 'logo.png').resize((249, 120))
-        dx_rating = Image.open(maimaidir / self._findRaPic()).resize((186, 35))
+        logo = Image.open(themepicdir / 'logo.png').resize((249, 120))
+        dx_rating = Image.open(themepicdir / self._findRaPic()).resize((186, 35))
         Name = Image.open(maimaidir / 'Name.png')
         MatchLevel = Image.open(maimaidir / self._findMatchLevel()).resize((80, 32))
         ClassLevel = Image.open(maimaidir / 'UI_FBR_Class_00.png').resize((90, 54))
@@ -258,9 +259,9 @@ class DrawBest(ScoreBaseImage):
         if self.plate:
             plate = Image.open(platedir / f'{self.plate}.png').resize((800, 130))
         else:
-            plate = Image.open(maimaidir / 'UI_Plate_300501.png').resize((800, 130))
+            plate = Image.open(maimaidir / 'UI_Plate_550101.png').resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
-        icon = Image.open(maimaidir / 'UI_Icon_309503.png').resize((120, 120))
+        icon = Image.open(maimaidir / 'UI_Icon_509506.png').resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))
         if self.qqid:
             try:
@@ -470,6 +471,9 @@ async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         msg = str(e)
+    except FileNotFoundError as e:
+        log.error(traceback.format_exc())
+        msg = format_missing_resource_error(e)
     except Exception as e:
         log.error(traceback.format_exc())
         msg = f'未知错误：{type(e)}\n请联系Bot管理员'

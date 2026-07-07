@@ -104,6 +104,7 @@ pie_html_file: Path = static / 'temp_pie.html'                  # 饼图html文�
 
 # 静态资源路径
 maimaidir: Path = static / 'mai' / 'pic'
+themepicdir: Path = maimaidir / 'prism_plus'
 coverdir: Path = static / 'mai' / 'cover'
 ratingdir: Path = static / 'mai' / 'rating'
 platedir: Path = static / 'mai' / 'plate'
