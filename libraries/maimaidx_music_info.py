@@ -225,7 +225,6 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
                         Image.open(maimaidir / f'UI_CHR_PlayBonus_{fsl[info.fs]}.png').resize((65, 65)), 
                         (1025, 261 + y * num)
                     )
-                im.alpha_composite(Image.open(maimaidir / 'ra.png'), (1350, 405 + y * num))
                 im.alpha_composite(
                     Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((100, 45)),
                     (737, 272 + y * num)
