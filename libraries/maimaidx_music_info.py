@@ -1,6 +1,13 @@
 import copy
 
-from .. import MessageSegment, get_botname, themepicdir
+from .. import (
+    MessageSegment,
+    all_version_names,
+    current_dx_version_names,
+    get_botname,
+    plate_versiondir,
+    themepicdir,
+)
 from .image import rounded_corners
 from .maimai_best_50 import *
 from .maimaidx_resource import format_missing_resource_error
@@ -42,7 +49,7 @@ async def draw_music_info(
                 player = await maiApi.query_user_b50(qqid=qqid, username=username)
             else:
                 player = user
-            if music.basic_info.version == list(plate_to_dx_version.values())[-1]:
+            if music.basic_info.version in current_dx_version_names:
                 bestlist = player.charts.dx
                 isfull = bool(len(bestlist) == 15)
             else:
@@ -149,7 +156,7 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
                 diff[_d.level_index] = _d
             dev = True
         else:
-            version = list(set(_v for _v in plate_to_dx_version.values()))
+            version = all_version_names
             data = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
 
             music = mai.total_list.by_id(music_id)
@@ -286,7 +293,7 @@ def draw_rating(rating: str, path: Path) -> MessageSegment:
 async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = False, username: Optional[str] = None) -> Union[MessageSegment, str]:
     """绘制定数表"""
     try:
-        version = list(set(_v for _v in plate_to_dx_version.values()))
+        version = all_version_names
         obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
         
         statistics = {
@@ -348,7 +355,7 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
         complete_bg = Image.open(maimaidir / 'complete_1.png')
         
         bg = ratingdir / f'{rating}.png'
-        
+
         im = Image.open(bg).convert('RGBA')
         dr = ImageDraw.Draw(im)
         sy = DrawText(dr, SIYUAN)
@@ -478,14 +485,17 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
         unfinished_bg = Image.open(maimaidir / 'unfinished_2.png')
         complete_bg = Image.open(maimaidir / 'complete_2.png')
 
-        im = Image.open(platedir / f'{version}.png')
+        table_path = platedir / f'{version}.png'
+        im = Image.open(table_path)
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
-        
+
         im.alpha_composite(Image.open(maimaidir / 'plate_num.png'), (185, 20))
+        plate_name = f'{version}{"極" if plan == "极" else plan}.png'
+        plate_path = plate_versiondir / plate_name
         im.alpha_composite(
-            Image.open(platedir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
+            Image.open(plate_path).resize((1000, 161)),
             (200, 35)
         )
         lv: List[set[int]] = [set() for _ in range(number)]

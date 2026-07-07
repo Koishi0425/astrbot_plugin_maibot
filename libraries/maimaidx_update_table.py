@@ -12,6 +12,7 @@ from .maimaidx_music import Music, mai
 async def update_rating_table() -> str:
     """更新定数表"""
     try:
+        ratingdir.mkdir(parents=True, exist_ok=True)
         dx = Image.open(maimaidir / 'DX.png').convert('RGBA').resize((44, 16))
         diff = [Image.new('RGBA', (75, 16), color) for color in ScoreBaseImage.bg_color]
         if maiApi.config.saveinmem and not ScoreBaseImage.aurora_bg:
@@ -64,7 +65,7 @@ async def update_rating_table() -> str:
             dr = ImageDraw.Draw(im)
             sy = DrawText(dr, SIYUAN)
             ts = DrawText(dr, TBFONT)
-            im.alpha_composite(Image.open(maimaidir / 'design.png'), (200, height - 113))
+            im.alpha_composite(Image.open(themepicdir / 'design.png'), (200, height - 113))
             sy.draw(
                 700, 
                 height - 70, 
@@ -77,10 +78,8 @@ async def update_rating_table() -> str:
             for _lv in lvlist: 
                 x = 160
                 y += 20
-                im.alpha_composite(
-                    Image.open(maimaidir / 'UI_CMN_Chara_Level_S_01.png').resize((80, 80)), (50, y + 80)
-                )
-                ts.draw(88, y + 120, 35, _lv, anchor='mm')
+                level_label = f".{str(_lv).split('.')[-1]}" if "." in str(_lv) else str(_lv)
+                ts.draw(88, y + 120, 35, level_label, sbi.text_color, 'mm', 4, (255, 255, 255, 255))
                 for num, music in enumerate(lvlist[_lv]):
                     if num % 14 == 0:
                         x = 160
@@ -113,6 +112,7 @@ async def update_rating_table() -> str:
 async def update_plate_table() -> str:
     """更新完成表"""
     try:
+        platedir.mkdir(parents=True, exist_ok=True)
         version = list(_ for _ in plate_to_dx_version.keys())[1:]
         # version.append('霸')
         # version.append('舞')
@@ -177,7 +177,7 @@ async def update_plate_table() -> str:
             dr = ImageDraw.Draw(im)
             ts = DrawText(dr, TBFONT)
             sy = DrawText(dr, SIYUAN)
-            im.alpha_composite(Image.open(maimaidir / 'design.png'), (200, height - 113))
+            im.alpha_composite(Image.open(themepicdir / 'design.png'), (200, height - 113))
             sy.draw(
                 700, 
                 height - 70, 
@@ -194,10 +194,7 @@ async def update_plate_table() -> str:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
                 if ralv[r]:
                     y += 15
-                    im.alpha_composite(
-                        Image.open(maimaidir / 'UI_CMN_Chara_Level_S_01.png'), (65, y + 115)
-                    )
-                    ts.draw(113, y + 164, 35, r, anchor='mm')
+                    ts.draw(113, y + 164, 35, r, sbi.text_color, 'mm', 4, (255, 255, 255, 255))
                 x = 200
                 for num, music in enumerate(ralv[r]):
                     if num % 10 == 0:

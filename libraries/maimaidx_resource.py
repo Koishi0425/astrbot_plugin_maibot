@@ -9,12 +9,23 @@ import aiofiles
 import aiohttp
 import py7zr
 
-from .. import Root, coverdir, log, maimaidir, platedir, ratingdir, static, themepicdir
+from .. import (
+    Root,
+    coverdir,
+    log,
+    maimaidir,
+    platedir,
+    plate_versiondir,
+    ratingdir,
+    shougoudir,
+    static,
+    themepicdir,
+)
 
 
 RESOURCE_ARCHIVE_NAME = "Resource.7z"
 RATING_DIGIT_NAMES = tuple(f"UI_NUM_Drating_{i}.png" for i in range(10))
-FONT_COMPAT_NAMES = (
+FONT_NAMES = (
     "ResourceHanRoundedCN-Bold.ttf",
     "ShangguMonoSC-Regular.otf",
     "Torus SemiBold.otf",
@@ -25,6 +36,8 @@ EXPECTED_RESOURCE_PATHS = (
     coverdir,
     ratingdir,
     platedir,
+    plate_versiondir,
+    shougoudir,
     themepicdir / "b50.png",
     themepicdir / "title.png",
     themepicdir / "title_lengthen.png",
@@ -39,7 +52,7 @@ EXPECTED_RESOURCE_PATHS = (
     maimaidir / "unfinished_2.png",
     maimaidir / "UI_Icon_509506.png",
     maimaidir / "UI_Plate_550101.png",
-    *(static / name for name in FONT_COMPAT_NAMES),
+    *(static / "font" / name for name in FONT_NAMES),
 )
 
 
@@ -183,31 +196,16 @@ def _copy_tree(source: Path, target: Path, result: ResourceInstallResult) -> Non
         _copy_file(src, dst, result)
 
 
-def _copy_flat_files(source: Path, target: Path, names: Iterable[str], result: ResourceInstallResult) -> None:
-    for name in names:
-        src = source / name
-        if src.is_file():
-            _copy_file(src, target / name, result)
-
-
-def _apply_layout_compatibility(result: ResourceInstallResult) -> None:
-    """Flatten upstream static/font, rating_table and plate_table layouts."""
-    font_dir = static / "font"
-    if font_dir.is_dir():
-        _copy_flat_files(font_dir, static, FONT_COMPAT_NAMES, result)
-
-    rating_table_dir = static / "mai" / "rating_table"
-    if rating_table_dir.is_dir():
-        _copy_tree(rating_table_dir, ratingdir, result)
-
-    plate_table_dir = static / "mai" / "plate_table"
-    if plate_table_dir.is_dir():
-        _copy_tree(plate_table_dir, platedir, result)
+def _ensure_current_layout_dirs() -> None:
+    ratingdir.mkdir(parents=True, exist_ok=True)
+    platedir.mkdir(parents=True, exist_ok=True)
+    plate_versiondir.mkdir(parents=True, exist_ok=True)
+    shougoudir.mkdir(parents=True, exist_ok=True)
 
 
 def _copy_full_static(source_static: Path, result: ResourceInstallResult) -> None:
     _copy_tree(source_static, static, result)
-    _apply_layout_compatibility(result)
+    _ensure_current_layout_dirs()
 
 
 def _copy_rating_digit_update(source_dir: Path, result: ResourceInstallResult) -> None:

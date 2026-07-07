@@ -89,6 +89,7 @@ SNAPSHOT_JS = (
 # 文件路径
 Root: Path = Path(__file__).parent
 static: Path = Root / 'static'
+fontdir: Path = static / 'font'
 
 arcades_json: Path = static / 'arcades.json'                    # 机厅
 config_json: Path = static / 'config.json'                      # legacy path; runtime config comes from AstrBot WebUI
@@ -106,14 +107,17 @@ pie_html_file: Path = static / 'temp_pie.html'                  # 饼图html文�
 maimaidir: Path = static / 'mai' / 'pic'
 themepicdir: Path = maimaidir / 'prism_plus'
 coverdir: Path = static / 'mai' / 'cover'
-ratingdir: Path = static / 'mai' / 'rating'
-platedir: Path = static / 'mai' / 'plate'
+plate_versiondir: Path = static / 'mai' / 'plate_version'
+shougoudir: Path = static / 'mai' / 'shougou'
+# 新版资源将生成表与牌子图分离：rating_table/plate_table 为生成表，plate_version 为牌子图。
+ratingdir: Path = static / 'mai' / 'rating_table'
+platedir: Path = static / 'mai' / 'plate_table'
 
 
 # 字体路径
-SIYUAN: Path =  static / 'ResourceHanRoundedCN-Bold.ttf'
-SHANGGUMONO: Path = static / 'ShangguMonoSC-Regular.otf'
-TBFONT: Path = static / 'Torus SemiBold.otf'
+SIYUAN: Path =  fontdir / 'ResourceHanRoundedCN-Bold.ttf'
+SHANGGUMONO: Path = fontdir / 'ShangguMonoSC-Regular.otf'
+TBFONT: Path = fontdir / 'Torus SemiBold.otf'
 
 
 # 常用变量
@@ -206,6 +210,8 @@ plate_to_dx_version: Dict[str, str] = {
     '镜': 'maimai でらっくす PRiSM',
     '彩': 'maimai でらっくす PRiSM PLUS'
 }
+all_version_names: List[str] = list(dict.fromkeys(plate_to_dx_version.values()))
+current_dx_version_names: List[str] = [plate_to_dx_version['彩']]
 version_map = {
     '真': ([plate_to_dx_version['真'], plate_to_dx_version['初']], '真'),
     '超': ([plate_to_sd_version['超']], '超'),

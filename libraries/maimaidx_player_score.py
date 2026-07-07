@@ -334,7 +334,7 @@ def get_rise_score_list(
         ss_ds = round((ra + int(score)) / 20.8, 1)
     sssp_ds = round(ra / 22.4, 1)
     ds = (sssp_ds + 0.1, ss_ds + 0.1)
-    version = list(plate_to_dx_version.values())[-2:] if type == 'DX' else list(plate_to_dx_version.values())[:-2]
+    version = current_dx_version_names if type == 'DX' else [v for v in all_version_names if v not in current_dx_version_names]
     musiclist = mai.total_list.filter(level=level, ds=ds, version=version)
     for _m in musiclist:
         if (song_id := int(_m.id)) in ignore:
@@ -404,7 +404,7 @@ async def rise_score_data(
     """
     try:
         user = await maiApi.query_user_b50(qqid=qqid, username=username)
-        records = await maiApi.query_user_plate(qqid=qqid, username=username, version=list(plate_to_dx_version.values()))
+        records = await maiApi.query_user_plate(qqid=qqid, username=username, version=all_version_names)
         old_records: DefaultDict[int, Dict[int, float]] = defaultdict(dict)
         for m in records:
             old_records[m.song_id][m.level_index] = m.achievements
@@ -623,7 +623,7 @@ async def level_process_data(
             devobj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
             obj = devobj.records
         else:
-            version = list(set(_v for _v in list(plate_to_dx_version.values())))
+            version = all_version_names
             obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
         music = mai.total_list.by_plan(level)
 
@@ -772,7 +772,7 @@ async def level_achievement_list_data(
             obj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
             data = obj.records
         else:
-            version = list(set(_v for _v in list(plate_to_dx_version.values())))
+            version = all_version_names
             obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
             for _d in obj:
                 music = mai.total_list.by_id(_d.song_id)

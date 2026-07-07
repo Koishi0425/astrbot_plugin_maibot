@@ -253,11 +253,12 @@ class DrawBest(ScoreBaseImage):
         Name = Image.open(maimaidir / 'Name.png')
         MatchLevel = Image.open(maimaidir / self._findMatchLevel()).resize((80, 32))
         ClassLevel = Image.open(maimaidir / 'UI_FBR_Class_00.png').resize((90, 54))
-        rating = Image.open(maimaidir / 'UI_CMN_Shougou_Rainbow.png').resize((270, 27))
+        rating = Image.open(shougoudir / 'UI_CMN_Shougou_Rainbow.png').resize((270, 27))
 
         self._im.alpha_composite(logo, (14, 60))
         if self.plate:
-            plate = Image.open(platedir / f'{self.plate}.png').resize((800, 130))
+            plate_path = plate_versiondir / f'{self.plate}.png'
+            plate = Image.open(plate_path).resize((800, 130))
         else:
             plate = Image.open(maimaidir / 'UI_Plate_550101.png').resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
