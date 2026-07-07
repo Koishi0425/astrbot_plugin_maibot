@@ -500,126 +500,86 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
             (200, 45)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
-        y = 245
-        # if plan == '者':
-        #     for level in ra:
-        #         x = 200
-        #         y += 15
-        #         for num, _id in enumerate(ra[level]):
-        #             if num % 10 == 0:
-        #                 x = 200
-        #                 y += 115
-        #             else:
-        #                 x += 115
-        #             f: List[int] = []
-        #             for num, play in enumerate(ra[level][_id]):
-        #                 if play.achievements or not play.achievements >= 80: continue
-        #                 fc = Image.open(maimaidir / f'UI_MSS_MBase_Icon_{fcl[play.fc]}.png')
-        #                 im.alpha_composite(fc, (x, y))
-        #                 f.append(n)
-        #             for n in f:
-        #                 im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        if plan == '极' or plan == '極':
-            for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or not play.fc: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            fc = Image.open(maimaidir / f'UI_CHR_PlayBonus_{fcl[play.fc]}.png').resize((75, 75))
-                            im.alpha_composite(fc, (x + 13, y + 3))
+        finished_songs = set()
+        start_x, start_y, grid_step, row_count = 180, 490, 96, 12
+
+        def is_qualified(play: Optional[PlayInfoDefault]) -> bool:
+            if play is None:
+                return False
+            if plan == '将':
+                return play.achievements >= 100
+            if plan == '者':
+                return play.achievements >= 80
+            if plan in ['极', '極']:
+                return bool(play.fc)
+            if plan == '神':
+                return play.fc in ['ap', 'app']
+            if plan == '舞舞':
+                return play.fs in ['fsd', 'fdx', 'fsdp', 'fdxp']
+            return False
+
+        current_y = start_y
+        for _level, songs in ra.items():
+            if not songs:
+                continue
+            rows = (len(songs) - 1) // row_count + 1
+            for idx, (_id, result) in enumerate(songs.items()):
+                row, col = divmod(idx, row_count)
+                x = start_x + col * grid_step
+                y = current_y + row * grid_step
+                hit_slots = []
+                for n, play in enumerate(result):
+                    if is_qualified(play):
+                        hit_slots.append(n)
                         lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        if plan == '将':
-            for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
+
+                if len(hit_slots) == number:
+                    finished_songs.add(int(_id))
+
+                index = len(result) - 1
+                if index in hit_slots:
+                    play = result[index]
+                    im.alpha_composite(complete_bg, (x + 1, y + 1))
+                    if plan in ['将', '者']:
+                        rate = computeRa(play.ds, play.achievements, onlyrate=True)
+                        rank = Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((80, 36))
+                        im.alpha_composite(rank, (x, y + 22))
                     else:
-                        x += 115
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.achievements < 100: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg if play.achievements >= 100 else unfinished_bg, (x, y))
-                            rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(themepicdir / f'UI_TTR_Rank_{rate}.png').resize((102, 46))
-                            im.alpha_composite(rank, (x - 1, y + 15))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        if plan == '神':
-            _fc = ['ap', 'app']
-            for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.fc not in _fc: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            ap = Image.open(maimaidir / f'UI_CHR_PlayBonus_{fcl[play.fc]}.png').resize((75, 75))
-                            im.alpha_composite(ap, (x + 13, y + 3))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        if plan == '舞舞':
-            fs = ['fsd', 'fdx', 'fsdp', 'fdxp']
-            for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.fs not in fs:
-                            continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            fsd = Image.open(maimaidir / f'UI_CHR_PlayBonus_{fsl[play.fs]}.png').resize((75, 75))
-                            im.alpha_composite(fsd, (x + 13, y + 3))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        
-        color = ScoreBaseImage.id_color.copy()
-        color.insert(0, (124, 129, 255, 255))
-        for num in range(len(lv) + 1):
-            if num == 0:
-                v = set.intersection(*lv)
-                _v = f'{len(v)}/{plate_total_num}'
-            else:
-                _v = len(lv[num - 1])
-            if _v == plate_total_num:
-                mr.draw(390 + 200 * num, 270, 35, '完成', color[num], 'rm', 4, (255, 255, 255, 255))
-            else:
-                tr.draw(390 + 200 * num, 270, 40, _v, color[num], 'rm', 4, (255, 255, 255, 255))
+                        icon_name = fcl.get(play.fc) or fsl.get(play.fs)
+                        if icon_name:
+                            icon = Image.open(maimaidir / f'UI_CHR_PlayBonus_{icon_name}.png').resize((60, 60))
+                            im.alpha_composite(icon, (x + 10, y + 12))
+
+                for n in hit_slots:
+                    im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, y + 63))
+            current_y += rows * grid_step + 30
+
+        complete_sum = len(finished_songs)
+        progress = complete_sum / plate_total_num if plate_total_num else 0
+        text = 'COMPLETED!!!' if complete_sum == plate_total_num else f'{complete_sum}/{plate_total_num}'
+        progress_big = Image.open(maimaidir / 'progress_big.png')
+        if progress:
+            im.alpha_composite(progress_big.crop((0, 0, int(993 * progress), 92)), (204, 219))
+
+        tr.draw(700, 240, 30, text, ScoreBaseImage.text_color, 'mm', 3, (255, 255, 255, 255))
+        tr.draw(1190, 240, 30, f'{round(progress * 100, 2)}%', ScoreBaseImage.text_color, 'rm', 3, (255, 255, 255, 255))
+
+        progress_small = Image.open(maimaidir / ('progress_small_wu.png' if version in ['霸', '舞'] else 'progress_small.png'))
+        progress_width = 176 if version in ['霸', '舞'] else 230
+        stats_start_x = 292 if version in ['霸', '舞'] else 320
+        stats_gap_x = 204 if version in ['霸', '舞'] else 253
+        progress_text_x = 89 if version in ['霸', '舞'] else 115
+        progress_x = 88 if version in ['霸', '舞'] else 115
+        for idx, complete_sum_group in enumerate(len(slot) for slot in lv):
+            x = stats_start_x + idx * stats_gap_x
+            plate_count = plate_total_num
+            progress_group = complete_sum_group / plate_count if plate_count else 0
+            if progress_group:
+                bar = progress_small.crop((0, 0, int(progress_width * progress_group), 46))
+                im.alpha_composite(bar, (x - progress_x, 326))
+            tr.draw(x, 300, 40, complete_sum_group, ScoreBaseImage.id_color[idx], 'mm', 4, (255, 255, 255, 255))
+            tr.draw(x + progress_text_x, 320, 14, f'/{plate_count}', ScoreBaseImage.id_color[idx], 'rd', 3, (255, 255, 255, 255))
+            tr.draw(x + progress_text_x, 343, 20, f'{round(progress_group * 100, 2)}%', ScoreBaseImage.text_color, 'rm', 2, (255, 255, 255, 255))
         
         msg = MessageSegment.image(image_to_base64(im))
     except (

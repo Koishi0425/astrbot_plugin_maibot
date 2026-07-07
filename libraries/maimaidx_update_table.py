@@ -116,7 +116,7 @@ async def update_plate_table() -> str:
         version = list(_ for _ in plate_to_dx_version.keys())[1:]
         # version.append('霸')
         # version.append('舞')
-        id_bg = Image.new('RGBA', (100, 20), (124, 129, 255, 255))
+        id_bg = Image.open(maimaidir / 'border_table_base.png')
         rlv: Dict[str, List[Music]] = {}
         for _ in list(reversed(levelList)):
             rlv[_] = []
@@ -139,31 +139,17 @@ async def update_plate_table() -> str:
             for m in music:
                 ralv[m.level[3]].append(m)
 
-            lines = 0
-            interval = 0
-            for _ in ralv:
-                musicnum = len(ralv[_])
-                if musicnum == 0:
+            grid_step = 96
+            start_x = 180
+            row_count = 12
+            current_y = 490
+            for songs in ralv.values():
+                if not songs:
                     continue
-                interval += 1
-                remainder = musicnum % 10
-                lines += (musicnum // 10) + (1 if remainder else 0)
-            
-            linesheight = 115 * lines + (interval - 1) * 15
-            """
-            `linesheight`: 各等级曲绘和间隔总和高度
-            
-                - `115` 为曲绘高度 `100` + 间隔 `15`
-                - `lines` 为行数
-                - `interval` 为各等级间隔行数
-                - `(interval - 1) * 15` 为各等级间隔高度，各等级之间间隔为 `30`，所以只加 `15`
-            """
-            width, height = 1400, 150 + linesheight + 360
-            """
-            `150` 为底部图片 `design` 高度 + 上下间隔高度
-            `linesheight` 为各等级曲绘和间隔总和高度
-            `360` 为顶部图片 `` 高度 + 上下间隔高度
-            """
+                rows = (len(songs) - 1) // row_count + 1
+                current_y += rows * grid_step + 30
+
+            width, height = 1400, current_y + 180
 
             im = tricolor_gradient(width, height)
             
@@ -186,26 +172,26 @@ async def update_plate_table() -> str:
                 sbi.text_color, 
                 'mm'
             )
-            y = 245
+            y = 490
             for r in ralv:
                 if _v in ['霸', '舞']:
                     ralv[r].sort(key=lambda x: x.ds[-1], reverse=True)
                 else:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
-                if ralv[r]:
-                    y += 15
-                    ts.draw(113, y + 164, 35, r, sbi.text_color, 'mm', 4, (255, 255, 255, 255))
-                x = 200
+                if not ralv[r]:
+                    continue
+                sy.draw(72, y + 40, 40, r, sbi.text_color, 'lm', 4, (255, 255, 255, 255))
+                max_row = 0
                 for num, music in enumerate(ralv[r]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                    row, col = divmod(num, row_count)
+                    max_row = max(max_row, row)
+                    x = start_x + col * grid_step
+                    _y = y + row * grid_step
                     cover = music_picture(music.id)
-                    im.alpha_composite(Image.open(cover).resize((100, 100)), (x, y))
-                    im.alpha_composite(id_bg, (x, y + 80))
-                    ts.draw(x + 50, y + 88, 20, music.id, anchor='mm')
+                    im.alpha_composite(Image.open(cover).resize((80, 80)), (x, _y))
+                    im.alpha_composite(id_bg, (x - 5, _y - 5))
+                    ts.draw(x + 56, _y + 4, 16, music.id, (255, 255, 255, 255), 'mm')
+                y += (max_row + 1) * grid_step + 30
 
             by = BytesIO()
             im.save(by, 'PNG')
