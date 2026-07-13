@@ -1,4 +1,5 @@
 import re
+import tempfile
 from textwrap import dedent
 from typing import Any, List
 import math
@@ -9,12 +10,12 @@ from astrbot.api.event import AstrMessageEvent
 
 from .. import log, is_reply_enabled
 from ..command.mai_base import convert_message_segment_to_chain
-from ..libraries.image import image_to_base64, text_to_image
 from ..libraries.maimai_best_50 import generate
 from ..libraries.maimaidx_identity import extract_at_user_id, is_numeric_qq, resolve_at_qq, resolve_sender_qq
 from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_music_info import draw_music_play_data
 from ..libraries.maimaidx_player_score import music_global_data
+from ..libraries.maimaidx_scoreline import draw_scoreline
 
 
 async def best50_handler(event: AstrMessageEvent):
@@ -187,80 +188,79 @@ async def ginfo_handler(event: AstrMessageEvent):
     
     
 async def score_handler(event: AstrMessageEvent):
-    """分数线命令处理"""
-    # 检查数据是否加载
+    """生成指定歌曲、指定难度的完整分数线解析图。"""
     if not hasattr(mai, 'total_list') or not mai.total_list:
         yield event.plain_result('歌曲数据未加载，请稍后再试或联系管理员')
         return
-    
-    message_str = event.message_str.strip()
-    # 移除命令前缀
-    args = message_str.replace('分数线', '').strip()
-    pro = args.split()
-    
-    if len(pro) == 1 and pro[0] == '帮助':
-        msg = dedent('''\
-            此功能为查找某首歌分数线设计。
-            命令格式：分数线「难度+歌曲id」「分数线」
-            例如：分数线 紫799 100
-            命令将返回分数线允许的「TAP」「GREAT」容错，
-            以及「BREAK」50落等价的「TAP」「GREAT」数。
-            以下为「TAP」「GREAT」的对应表：
-                    GREAT / GOOD / MISS
-            TAP         1 / 2.5  / 5
-            HOLD        2 / 5    / 10
-            SLIDE       3 / 7.5  / 15
-            TOUCH       1 / 2.5  / 5
-            BREAK       5 / 12.5 / 25 (外加200落)
-        ''').strip()
-        import tempfile
-        img = text_to_image(msg)
-        img_base64 = image_to_base64(img)
-        # image_to_base64 返回 base64 字符串，需要保存为临时文件
-        if img_base64.startswith('base64://'):
-            img_base64 = img_base64[9:]  # 移除 base64:// 前缀
-        import base64
-        img_data = base64.b64decode(img_base64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-            temp_file.write(img_data)
-            temp_file_path = temp_file.name
-        chain = [Comp.Image.fromFileSystem(temp_file_path)]
-        yield event.chain_result(chain)
-    else:
-        try:
-            result = re.search(r'([绿黄红紫白])\s?([0-9]+)', args)
-            if not result:
-                raise ValueError
-            level_labels = ['绿', '黄', '红', '紫', '白']
-            level_labels2 = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:MASTER']
-            level_index = level_labels.index(result.group(1))
-            chart_id = result.group(2)
-            line = float(pro[-1])
-            music = mai.total_list.by_id(chart_id)
-            chart = music.charts[level_index]
-            tap = int(chart.notes.tap)
-            slide = int(chart.notes.slide)
-            hold = int(chart.notes.hold)
-            touch = int(chart.notes.touch) if len(chart.notes) == 5 else 0
-            brk = int(chart.notes.brk)
-            total_score = tap * 500 + slide * 1500 + hold * 1000 + touch * 500 + brk * 2500
-            break_bonus = 0.01 / brk
-            break_50_reduce = total_score * break_bonus / 4
-            reduce = 101 - line
-            if reduce <= 0 or reduce >= 101:
-                raise ValueError
-            msg = dedent(f'''\
-                {music.title}「{level_labels2[level_index]}」
-                分数线「{line}%」
-                允许的最多「TAP」「GREAT」数量为 
-                「{(total_score * reduce / 10000):.2f}」(每个-{10000 / total_score:.4f}%),
-                「BREAK」50落(一共「{brk}」个)
-                等价于「{(break_50_reduce / 100):.3f}」个「TAP」「GREAT」(-{break_50_reduce / total_score * 100:.4f}%)
-            ''').strip()
-            yield event.plain_result(msg)
-        except (AttributeError, ValueError) as e:
-            log.exception(e)
-            yield event.plain_result('格式错误，输入"分数线 帮助"以查看帮助信息')
+
+    args = re.sub(r'^分数线\s*', '', event.message_str.strip(), count=1).strip()
+    if not args or args == '帮助':
+        yield event.plain_result(
+            '用法：分数线 <歌曲名/别名/ID> [难度]\n'
+            '难度可用：绿/黄/红/紫/白 或 Basic/Advanced/Expert/Master/Re:Master\n'
+            '不填写难度时默认查询紫谱 Master。\n'
+            '例如：分数线 FFT、分数线 820 白'
+        )
+        return
+
+    difficulty_aliases = {
+        '绿': 0, 'basic': 0,
+        '黄': 1, 'advanced': 1,
+        '红': 2, 'expert': 2,
+        '紫': 3, 'master': 3,
+        '白': 4, 'remaster': 4, 're:master': 4,
+    }
+    tokens = args.split()
+    level_index = 3
+    if tokens and tokens[-1].lower() in difficulty_aliases:
+        level_index = difficulty_aliases[tokens.pop().lower()]
+    query = ' '.join(tokens).strip()
+    if not query:
+        yield event.plain_result('请输入歌曲名、别名或 ID')
+        return
+
+    music = None
+    normalized_id = query[2:].strip() if query.lower().startswith('id') else query
+    if normalized_id.isdigit():
+        music = mai.total_list.by_id(normalized_id)
+    if not music:
+        music = mai.total_list.by_title(query)
+    if not music and getattr(mai, 'total_alias_list', None):
+        aliases = mai.total_alias_list.by_alias(query.lower())
+        if aliases:
+            if len(aliases) > 1:
+                choices = '、'.join(f'{item.SongID}:{item.Name}' for item in aliases[:8])
+                yield event.plain_result(f'该别名对应多首歌曲，请改用 ID：{choices}')
+                return
+            music = mai.total_list.by_id(str(aliases[0].SongID))
+    if not music:
+        matches = mai.total_list.filter(title_search=query)
+        if len(matches) == 1:
+            music = matches[0]
+        elif len(matches) > 1:
+            choices = '、'.join(f'{item.id}:{item.title}' for item in matches[:8])
+            yield event.plain_result(f'找到多首相似歌曲，请改用 ID：{choices}')
+            return
+    if not music:
+        yield event.plain_result(f'未找到歌曲：{query}')
+        return
+    if level_index >= len(music.ds):
+        yield event.plain_result(f'《{music.title}》没有该难度谱面')
+        return
+
+    try:
+        image = draw_scoreline(music, level_index)
+    except (AttributeError, IndexError, ValueError) as exc:
+        log.warning(f'生成分数线失败：{exc}')
+        yield event.plain_result(f'《{music.title}》的该谱面缺少有效音符数据')
+        return
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as file:
+        image.save(file, format='PNG')
+        path = file.name
+    chain = [Comp.Image.fromFileSystem(path)]
+    if is_reply_enabled():
+        chain.insert(0, Comp.Reply(id=event.message_obj.message_id))
+    yield event.chain_result(chain)
 
 async def mai_score_calculate_handler(event: AstrMessageEvent):
     """计算指定定数和达成率的分数"""
