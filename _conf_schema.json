@@ -49,7 +49,13 @@
         "description": "别名推送",
         "hint": "是否启用别名投票推送 WebSocket。",
         "type": "bool",
-        "default": true
+        "default": false
+      },
+      "maimaidxaliasvoting": {
+        "description": "别名申请与投票",
+        "hint": "开启后允许提交别名申请、查看投票和参与投票；关闭不影响别名查询、本地别名和更新别名库。",
+        "type": "bool",
+        "default": false
       },
       "maimaidxaliasproxy": {
         "description": "别名服务代理",
@@ -60,6 +66,18 @@
       "maimaidxaliaswhitelist": {
         "description": "别名推送白名单模式",
         "hint": "开启后仅向已执行“开启别名推送”的群广播；关闭则保持旧逻辑。",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "arcade": {
+    "description": "机厅排卡设置",
+    "type": "object",
+    "items": {
+      "arcade_enabled": {
+        "description": "启用机厅排卡",
+        "hint": "默认关闭；开启后才加载机厅数据、注册后台更新并响应机厅排卡指令。",
         "type": "bool",
         "default": false
       }

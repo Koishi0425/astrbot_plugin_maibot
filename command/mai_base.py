@@ -103,7 +103,7 @@ async def update_data_handler(event: AstrMessageEvent, superusers: list = None, 
 
 
 async def maimaidxhelp_handler(event: AstrMessageEvent):
-    """帮助maimaiDX"""
+    """mai帮助"""
     help_image_path = Root / 'maimaidxhelp.png'
     if help_image_path.exists():
         chain = [
@@ -112,12 +112,6 @@ async def maimaidxhelp_handler(event: AstrMessageEvent):
         yield event.chain_result(chain)
     else:
         yield event.plain_result('帮助图片未找到')
-
-
-async def maimaidxrepo_handler(event: AstrMessageEvent):
-    """项目地址maimaiDX"""
-    yield event.plain_result('项目地址：https://github.com/ZhiheZier/astrbot_plugin_maimaidx\n求star，求宣传~')
-
 
 async def mai_today_handler(event: AstrMessageEvent):
     """今日mai/今日舞萌/今日运势"""

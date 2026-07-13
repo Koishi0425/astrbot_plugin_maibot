@@ -7,7 +7,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from .. import comboRank, combo_rank, levelList, log, platecn, scoreRank, syncRank, is_reply_enabled
 from ..command.mai_base import convert_message_segment_to_chain
-from ..libraries.maimaidx_identity import extract_at_user_id, resolve_at_qq, resolve_sender_qq
+from ..libraries.maimaidx_identity import extract_at_user_id, is_numeric_qq, resolve_at_qq, resolve_sender_qq
 from ..libraries.maimaidx_music_info import (
     draw_plate_table,
     draw_rating,
@@ -77,17 +77,33 @@ async def rating_table_handler(event: AstrMessageEvent):
 async def table_pfm_handler(event: AstrMessageEvent):
     """完成表命令处理"""
     message_str = event.message_str.strip()
-    # 移除后缀
-    args = message_str.replace('完成表', '').strip()
+    # 支持“<表格>完成表 <查分器用户名/QQ>”和 @ 用户。
+    args, _, target = message_str.partition('完成表')
+    args = args.strip()
+    target = target.strip()
 
     rating = re.search(r'^([0-9]+\+?)(app|fcp|ap|fc)?', args, re.IGNORECASE)
     plate = re.search(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉熊華华爽煌舞霸宙星祭祝双宴镜彩])([極极将舞神者]舞?)$', args)
 
-    identity = await _resolve_query_qq(event)
-    if identity.error:
-        yield event.plain_result(identity.error)
-        return
-    qqid = identity.qqid
+    username = None
+    qqid = None
+    if extract_at_user_id(event):
+        identity = await resolve_at_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
+    elif target:
+        if is_numeric_qq(target):
+            qqid = target
+        else:
+            username = target
+    else:
+        identity = await resolve_sender_qq(event)
+        if identity.error:
+            yield event.plain_result(identity.error)
+            return
+        qqid = identity.qqid
 
     if rating:
         ra = rating.group(1)
@@ -96,7 +112,12 @@ async def table_pfm_handler(event: AstrMessageEvent):
             yield event.plain_result('只支持查询lv6-15的完成表')
             return
         elif ra in levelList[5:]:
-            pic = await draw_rating_table(qqid=qqid, rating=ra, isfc=True if plan and plan.lower() in combo_rank else False)
+            pic = await draw_rating_table(
+                qqid=qqid,
+                username=username,
+                rating=ra,
+                isfc=True if plan and plan.lower() in combo_rank else False,
+            )
             chain = convert_message_segment_to_chain(pic)
             if is_reply_enabled():
                 chain.insert(0, Comp.Reply(id=event.message_obj.message_id))
@@ -116,7 +137,7 @@ async def table_pfm_handler(event: AstrMessageEvent):
         if f'{ver}{plan}' == '真将':
             yield event.plain_result('真系没有真将哦')
             return
-        pic = await draw_plate_table(qqid=qqid, version=ver, plan=plan)
+        pic = await draw_plate_table(qqid=qqid, username=username, version=ver, plan=plan)
         chain = convert_message_segment_to_chain(pic)
         if is_reply_enabled():
             chain.insert(0, Comp.Reply(id=event.message_obj.message_id))
@@ -208,7 +229,7 @@ async def level_process_handler(event: AstrMessageEvent):
     message_str = event.message_str.strip()
 
     # 匹配正则表达式
-    match = re.match(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?', message_str)
+    match = re.match(r'^([0-9]+\+?)([abcdsfxp\+]+)([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?', message_str)
     if not match:
         return  # 不匹配则不处理
     

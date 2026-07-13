@@ -115,28 +115,58 @@ async def unbind_event_qq(event: AstrMessageEvent) -> bool:
 
 
 def extract_at_user_id(event: AstrMessageEvent) -> Optional[str]:
+    # QQ 官方适配器会在私聊命令前附加一个指向机器人的 At 组件。
+    # 私聊没有“查询另一位群成员”的语义，因此所有 At 都应忽略。
+    message_obj = getattr(event, "message_obj", None)
+    if not getattr(message_obj, "group_id", None):
+        return None
+
     if not event.message_obj or not event.message_obj.message:
         return None
+
+    bot_ids = {"qq_official"}
+    for owner in (event, message_obj, getattr(event, "bot", None)):
+        if owner is None:
+            continue
+        for attr in ("self_id", "bot_id", "id"):
+            value = getattr(owner, attr, None)
+            if value:
+                bot_ids.add(str(value))
+        get_self_id = getattr(owner, "get_self_id", None)
+        if callable(get_self_id):
+            try:
+                value = get_self_id()
+                if value:
+                    bot_ids.add(str(value))
+            except Exception:
+                pass
+
     for component in event.message_obj.message:
+        at_user_id = None
         if hasattr(component, "qq") and component.qq:
-            return str(component.qq)
-        if hasattr(component, "user_id") and component.user_id:
-            return str(component.user_id)
-        if hasattr(component, "type") and component.type == "at" and hasattr(component, "data"):
+            at_user_id = str(component.qq)
+        elif hasattr(component, "user_id") and component.user_id:
+            at_user_id = str(component.user_id)
+        elif hasattr(component, "type") and component.type == "at" and hasattr(component, "data"):
             data = component.data or {}
             for key in ("qq", "user_id", "id", "openid"):
                 if key in data and data[key]:
-                    return str(data[key])
+                    at_user_id = str(data[key])
+                    break
+        if at_user_id and at_user_id not in bot_ids:
+            return at_user_id
     return None
 
 
 async def resolve_user_qq(event: AstrMessageEvent, user_id=None, target: str = "你") -> MaimaiIdentity:
     raw_id = str(user_id if user_id is not None else event.get_sender_id())
-    if is_numeric_qq(raw_id):
-        return MaimaiIdentity(qqid=raw_id)
     bound = await get_bound_qq(event, raw_id)
     if bound:
         return MaimaiIdentity(qqid=bound)
+    # 非 QQ 平台的用户 ID 也经常是纯数字。优先使用显式绑定，
+    # 避免把 Telegram/Discord 等平台 ID 误当作 QQ 号。
+    if is_numeric_qq(raw_id):
+        return MaimaiIdentity(qqid=raw_id)
     return MaimaiIdentity(error=binding_required_message(target))
 
 

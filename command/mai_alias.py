@@ -67,6 +67,9 @@ async def update_alias_handler(event: AstrMessageEvent, superusers: list = None)
 
 async def alias_switch_on_off_handler(event: AstrMessageEvent, superusers: list = None):
     """全局开启/关闭别名推送命令处理"""
+    if not maiApi.config.maimaidxaliaspush:
+        yield event.plain_result('别名推送已在插件配置中关闭')
+        return
     sender_id = event.get_sender_id()
     if superusers and str(sender_id) not in superusers:
         yield event.plain_result('仅允许超级管理员执行此操作')
@@ -142,6 +145,9 @@ async def alias_local_apply_handler(event: AstrMessageEvent):
 
 async def alias_apply_handler(event: AstrMessageEvent):
     """添加别名命令处理"""
+    if not maiApi.config.maimaidxaliasvoting:
+        yield event.plain_result('别名申请与投票功能未启用；别名查询、本地别名和更新别名库仍可使用')
+        return
     # 检查数据是否加载
     if not hasattr(mai, 'total_list') or not mai.total_list:
         yield event.plain_result('歌曲数据未加载，请稍后再试或联系管理员')
@@ -187,6 +193,9 @@ async def alias_apply_handler(event: AstrMessageEvent):
 
 async def alias_agree_handler(event: AstrMessageEvent):
     """同意别名命令处理"""
+    if not maiApi.config.maimaidxaliasvoting:
+        yield event.plain_result('别名申请与投票功能未启用')
+        return
     try:
         message_str = event.message_str.strip()
         # 移除命令前缀
@@ -209,6 +218,9 @@ async def alias_agree_handler(event: AstrMessageEvent):
 
 async def alias_status_handler(event: AstrMessageEvent):
     """当前投票命令处理"""
+    if not maiApi.config.maimaidxaliasvoting:
+        yield event.plain_result('别名申请与投票功能未启用')
+        return
     try:
         message_str = event.message_str.strip()
         # 移除命令前缀
@@ -314,6 +326,9 @@ async def alias_song_handler(event: AstrMessageEvent):
 
 async def alias_switch_handler(event: AstrMessageEvent):
     """别名推送开关命令处理"""
+    if not maiApi.config.maimaidxaliaspush:
+        yield event.plain_result('别名推送已在插件配置中关闭')
+        return
     group_id = event.message_obj.group_id
     if not group_id:
         yield event.plain_result('别名推送开关功能仅在群聊中可用')

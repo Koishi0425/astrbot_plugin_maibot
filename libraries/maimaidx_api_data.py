@@ -13,13 +13,15 @@ class MaiConfig(BaseModel):
     maimaidxtoken: Optional[str] = None
     maimaidxproberproxy: bool = False
     maimaidxaliasproxy: bool = False
-    maimaidxaliaspush: bool = True
+    maimaidxaliaspush: bool = False
+    maimaidxaliasvoting: bool = False
     # True：仅向「开启别名推送」的群广播；False：向所有群广播，但排除 disable 列表（默认，兼容旧行为）
     maimaidxaliaswhitelist: bool = False
     saveinmem: Optional[bool] = True
     resource_local_path: str = ""
     resource_source_url: str = ""
     resource_check_on_startup: bool = True
+    arcade_enabled: bool = False
 
 
 class MaimaiAPI:

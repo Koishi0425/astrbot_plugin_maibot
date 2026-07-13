@@ -130,14 +130,14 @@ async def ginfo_handler(event: AstrMessageEvent):
         yield event.plain_result('请输入曲目id或曲名')
         return
     
-    if args[0] not in '绿黄红紫白':
-        level_index = 3
+    # 参数顺序统一为“歌曲在前、难度在后”，例如：ginfo 799 紫。
+    # 不写难度时仍默认查询紫谱。
+    parts = args.rsplit(maxsplit=1)
+    if len(parts) == 2 and parts[1] in '绿黄红紫白':
+        args, difficulty = parts
+        level_index = '绿黄红紫白'.index(difficulty)
     else:
-        level_index = '绿黄红紫白'.index(args[0])
-        args = args[1:].strip()
-        if not args:
-            yield event.plain_result('请输入曲目id或曲名')
-            return
+        level_index = 3
     
     if mai.total_list.by_id(args):
         id = args

@@ -20,7 +20,7 @@ import sys
 def _config_get(config: dict, key: str, default=None):
     if key in config:
         return config.get(key, default)
-    for section in ("basic", "prober", "alias", "resource"):
+    for section in ("basic", "prober", "alias", "arcade", "resource"):
         section_config = config.get(section)
         if isinstance(section_config, dict) and key in section_config:
             return section_config.get(key, default)
@@ -61,12 +61,14 @@ class MaimaiDXPlugin(Star):
             maimaidxtoken=str(_config_get(self.config, "maimaidxtoken", "") or "").strip() or None,
             maimaidxproberproxy=_config_bool(self.config, "maimaidxproberproxy", False),
             maimaidxaliasproxy=_config_bool(self.config, "maimaidxaliasproxy", False),
-            maimaidxaliaspush=_config_bool(self.config, "maimaidxaliaspush", True),
+            maimaidxaliaspush=_config_bool(self.config, "maimaidxaliaspush", False),
+            maimaidxaliasvoting=_config_bool(self.config, "maimaidxaliasvoting", False),
             maimaidxaliaswhitelist=_config_bool(self.config, "maimaidxaliaswhitelist", False),
             saveinmem=_config_bool(self.config, "saveinmem", True),
             resource_local_path=str(_config_get(self.config, "resource_local_path", "") or "").strip(),
             resource_source_url=str(_config_get(self.config, "resource_source_url", "") or "").strip(),
             resource_check_on_startup=_config_bool(self.config, "resource_check_on_startup", True),
+            arcade_enabled=_config_bool(self.config, "arcade_enabled", False),
         ))
         pkg_name = __name__.rsplit('.', 1)[0]  # 获取包名，例如 'myplugins.astrbot_plugin_maimaidx'
         if pkg_name in sys.modules:
@@ -104,7 +106,10 @@ class MaimaiDXPlugin(Star):
             await self._load_maimai_data()
             
             # 加载机厅数据
-            await self._load_arcade_data()
+            if maiApi.config.arcade_enabled:
+                await self._load_arcade_data()
+            else:
+                loga.info('机厅排卡功能未启用，跳过机厅数据初始化')
             
             # 加载图片到内存（如果配置了）
             self._load_images_to_memory()
@@ -165,6 +170,8 @@ class MaimaiDXPlugin(Star):
             asyncio.ensure_future(ws_alias_server(self.context))
         else:
             log.info('别名推送为「关闭」状态')
+        log.info(f'别名申请与投票为「{"开启" if maiApi.config.maimaidxaliasvoting else "关闭"}」状态')
+        loga.info(f'机厅排卡为「{"开启" if maiApi.config.arcade_enabled else "关闭"}」状态')
 
     async def _load_maimai_data(self):
         """负责加载所有maimai相关数据（歌曲、别名等）"""
@@ -269,6 +276,8 @@ class MaimaiDXPlugin(Star):
         )
         
         # 添加机厅数据每日更新定时任务（每天凌晨3点）
+        if not maiApi.config.arcade_enabled:
+            return
         try:
             from .libraries.maimaidx_arcade import arcade
             self.scheduler.add_job(
@@ -370,9 +379,9 @@ class MaimaiDXPlugin(Star):
         async for result in unbind_qq_handler(event):
             yield result
 
-    @filter.regex(r'^(帮助maimaiDX|帮助maimaidx)$')
+    @filter.regex(r'^mai帮助$')
     async def maimaidxhelp(self, event: AstrMessageEvent):
-        """帮助maimaiDX"""
+        """mai帮助"""
         # 检查群组是否启用
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
@@ -380,16 +389,6 @@ class MaimaiDXPlugin(Star):
         
         from .command.mai_base import maimaidxhelp_handler
         async for result in maimaidxhelp_handler(event):
-            yield result
-
-    @filter.regex(r'^(项目地址maimaiDX|项目地址maimaidx)$')
-    async def maimaidxrepo(self, event: AstrMessageEvent):
-        """项目地址"""
-        group_id = event.message_obj.group_id
-        if group_id and not self._is_group_enabled(str(group_id)):
-            return
-        from .command.mai_base import maimaidxrepo_handler
-        async for result in maimaidxrepo_handler(event):
             yield result
 
     @filter.regex(r'^(今日mai|今日舞萌|今日运势)$')
@@ -450,9 +449,62 @@ class MaimaiDXPlugin(Star):
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
+        if group_id and event.message_str.strip().lower() == 'b50':
+            from .libraries.maimaidx_group_ranking import enroll_group_rating_user
+            await enroll_group_rating_user(event, silent=True)
         
         from .command.mai_score import best50_handler
         async for result in best50_handler(event):
+            yield result
+
+    @filter.regex(r'^群(?i:rating)(?:\s+([1-9][0-9]*))?$')
+    async def group_rating(self, event: AstrMessageEvent):
+        """群 Rating 排行"""
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_group_ranking import group_rating_handler
+        async for result in group_rating_handler(event):
+            yield result
+
+    @filter.regex(r'^加入群榜$')
+    async def join_group_rating(self, event: AstrMessageEvent):
+        """加入群 Rating 榜"""
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_group_ranking import join_group_rating_handler
+        async for result in join_group_rating_handler(event):
+            yield result
+
+    @filter.regex(r'^退出群榜$')
+    async def leave_group_rating(self, event: AstrMessageEvent):
+        """退出群 Rating 榜"""
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_group_ranking import leave_group_rating_handler
+        async for result in leave_group_rating_handler(event):
+            yield result
+
+    @filter.regex(r'^(群榜签名\s+.+|清除群榜签名)$')
+    async def group_rating_signature(self, event: AstrMessageEvent):
+        """设置群 Rating 榜签名"""
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_group_ranking import group_rating_signature_handler
+        async for result in group_rating_signature_handler(event):
+            yield result
+
+    @filter.regex(r'^(?:(?i:grank)|群排行)\s+(.+)$')
+    async def group_song_rank(self, event: AstrMessageEvent):
+        """指定歌曲、指定难度的群内成绩排行"""
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_group_ranking import group_song_rank_handler
+        async for result in group_song_rank_handler(event):
             yield result
 
     @filter.regex(r'^(minfo|Minfo|MINFO|info|Info|INFO)\s*(.*)$')
@@ -648,7 +700,7 @@ class MaimaiDXPlugin(Star):
         async for result in rating_table_handler(event):
             yield result
 
-    @filter.regex(r'^(?!更新)(.+?)完成表$')
+    @filter.regex(r'^(?!更新)(.+?)完成表(?:\s+(.+))?$')
     async def table_pfm(self, event: AstrMessageEvent):
         """完成表命令"""
         group_id = event.message_obj.group_id
@@ -678,7 +730,7 @@ class MaimaiDXPlugin(Star):
         async for result in plate_process_handler(event):
             yield result
 
-    @filter.regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?$')
+    @filter.regex(r'^([0-9]+\+?)([abcdsfxp\+]+)([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?$')
     async def level_process(self, event: AstrMessageEvent):
         """等级进度命令"""
         group_id = event.message_obj.group_id
@@ -783,6 +835,9 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(帮助maimaiDX排卡|帮助maimaidx排卡)$')
     async def dx_arcade_help(self, event: AstrMessageEvent):
         """帮助maimaiDX排卡"""
+        if not maiApi.config.arcade_enabled:
+            yield event.plain_result('机厅排卡功能未启用，请由管理员在插件配置中开启')
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -793,6 +848,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(添加机厅|新增机厅)\s+(.+)$')
     async def add_arcade(self, event: AstrMessageEvent):
         """添加机厅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -803,6 +860,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(删除机厅|移除机厅)\s+(.+)$')
     async def delete_arcade(self, event: AstrMessageEvent):
         """删除机厅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -813,6 +872,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(添加机厅别名|删除机厅别名)\s+(.+)$')
     async def arcade_alias(self, event: AstrMessageEvent):
         """添加/删除机厅别名"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -823,6 +884,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(修改机厅|编辑机厅)\s+(.+)$')
     async def modify_arcade(self, event: AstrMessageEvent):
         """修改机厅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -833,6 +896,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(订阅机厅|取消订阅机厅|取消订阅)\s(.+)$')
     async def subscribe_arcade(self, event: AstrMessageEvent):
         """订阅/取消订阅机厅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -843,6 +908,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(查看订阅|查看订阅机厅)$')
     async def check_subscribe(self, event: AstrMessageEvent):
         """查看订阅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -853,6 +920,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(查找机厅|查询机厅|机厅查找|机厅查询|搜素机厅|机厅搜素)\s+(.+)$')
     async def search_arcade(self, event: AstrMessageEvent):
         """查找机厅"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -863,6 +932,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(.+)?\s?(设置|设定|＝|=|增加|添加|加|＋|\+|减少|降低|减|－|-)\s?([0-9]+|＋|\+|－|-)(人|卡)?$')
     async def arcade_person(self, event: AstrMessageEvent):
         """操作排卡人数"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -873,6 +944,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(机厅几人|jtj)$')
     async def arcade_query_multiple(self, event: AstrMessageEvent):
         """机厅几人"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
@@ -883,6 +956,8 @@ class MaimaiDXPlugin(Star):
     @filter.regex(r'^(.+?)(有多少人|有几人|有几卡|多少人|多少卡|几人|jr|几卡)$')
     async def arcade_query_person(self, event: AstrMessageEvent):
         """有多少人/有几人/有几卡"""
+        if not maiApi.config.arcade_enabled:
+            return
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
