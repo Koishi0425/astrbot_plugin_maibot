@@ -1,7 +1,7 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.core.star.filter.event_message_type import EventMessageType
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api import AstrBotConfig, logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import asyncio
@@ -20,7 +20,7 @@ import sys
 def _config_get(config: dict, key: str, default=None):
     if key in config:
         return config.get(key, default)
-    for section in ("basic", "prober", "alias", "arcade", "resource", "sdgb"):
+    for section in ("basic", "prober", "alias", "arcade", "resource", "sdgb", "tech"):
         section_config = config.get(section)
         if isinstance(section_config, dict) and key in section_config:
             return section_config.get(key, default)
@@ -44,9 +44,9 @@ def _config_bool(config: dict, key: str, default: bool) -> bool:
 
 @register("astrbot_plugin_maimaidx", "ZhiheZier", "maimaiDX插件", "1.1.1")
 class MaimaiDXPlugin(Star):
-    def __init__(self, context: Context, config: dict | None = None):
+    def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config = config if config is not None else {}
         self.scheduler = AsyncIOScheduler()
         self.scheduler.start()
         
@@ -505,6 +505,210 @@ class MaimaiDXPlugin(Star):
             _config_get(self.config, "sdgb_user_bindings", ""),
         ):
             yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @filter.command_group("tech")
+    def tech(self):
+        """私有 SDGB Tech 后端指令。"""
+        pass
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("status", alias={"状态"})
+    async def tech_status(self, event: AstrMessageEvent):
+        """查看 maibot 与私有后端状态。"""
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        try:
+            status = await call_backend("status")
+        except BridgeError as exc:
+            yield event.plain_result(
+                f"maibot Tech 前端："
+                f"{'已启用' if self._tech_enabled() else '已关闭'}；"
+                f"后端不可用：{exc.safe_message}"
+            )
+            return
+        yield event.plain_result(
+            f"maibot Tech 前端："
+            f"{'已启用' if self._tech_enabled() else '已关闭'}；"
+            f"私有后端：{'已启用' if status.get('enabled') else '已关闭'}；"
+            f"{'允许写入' if status.get('write_enabled') else '只读'}；"
+            f"{status.get('safe_message', '')}"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("enable", alias={"开启"})
+    async def tech_enable(self, event: AstrMessageEvent):
+        """由 AstrBot 超级管理员同时开启前端与私有后端。"""
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        try:
+            await call_backend("set_enabled", enabled=True)
+            self._set_tech_enabled(True)
+        except BridgeError as exc:
+            yield event.plain_result(f"SDGB Tech 无法启用：{exc.safe_message}")
+            return
+        yield event.plain_result("SDGB Tech 已启用；写入能力仍受后端独立开关控制")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("disable", alias={"关闭"})
+    async def tech_disable(self, event: AstrMessageEvent):
+        """关闭 maibot Tech 前端并请求关闭私有后端。"""
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        self._set_tech_enabled(False)
+        try:
+            await call_backend("set_enabled", enabled=False)
+        except BridgeError:
+            yield event.plain_result("maibot Tech 前端已关闭；私有后端当前不可达")
+            return
+        yield event.plain_result("SDGB Tech 已关闭")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("capabilities", alias={"能力"})
+    async def tech_capabilities(self, event: AstrMessageEvent):
+        """查看私有后端动态提供的能力。"""
+        from .command.mai_tech import format_capabilities
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        if not self._tech_enabled():
+            yield event.plain_result("SDGB Tech 前端尚未启用")
+            return
+        try:
+            items = await call_backend("capabilities")
+        except BridgeError as exc:
+            yield event.plain_result(f"SDGB Tech 请求被拒绝：{exc.safe_message}")
+            return
+        yield event.plain_result(format_capabilities(items))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("preview", alias={"预览"})
+    async def tech_preview(
+        self,
+        event: AstrMessageEvent,
+        capability: str,
+        parameters: str = "-",
+    ):
+        """预览私有能力；参数使用逗号分隔的 key=value。"""
+        from .command.mai_tech import parse_parameters, validate_capability
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        if not self._tech_enabled():
+            yield event.plain_result("SDGB Tech 前端尚未启用")
+            return
+        try:
+            preview = await call_backend(
+                "preview",
+                actor=str(event.get_sender_id()),
+                capability=validate_capability(capability),
+                parameters=parse_parameters(parameters),
+            )
+        except (BridgeError, ValueError) as exc:
+            message = exc.safe_message if isinstance(exc, BridgeError) else str(exc)
+            yield event.plain_result(f"SDGB Tech 请求被拒绝：{message}")
+            return
+        mode = "写入" if preview.get("write") else "只读"
+        yield event.plain_result(
+            f"预览 [{mode}]：{preview.get('summary')}\n"
+            f"确认码：{preview.get('plan_id')}\n"
+            f"{preview.get('expires_in')} 秒内发送："
+            f"/tech confirm {preview.get('plan_id')}"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("confirm", alias={"确认"})
+    async def tech_confirm(self, event: AstrMessageEvent, plan_id: str):
+        """确认同一管理员生成的短时计划。"""
+        from .command.mai_tech import validate_identifier
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        if not self._tech_enabled():
+            yield event.plain_result("SDGB Tech 前端尚未启用")
+            return
+        try:
+            job = await call_backend(
+                "confirm",
+                actor=str(event.get_sender_id()),
+                plan_id=validate_identifier(plan_id, "确认码"),
+            )
+        except (BridgeError, ValueError) as exc:
+            message = exc.safe_message if isinstance(exc, BridgeError) else str(exc)
+            yield event.plain_result(f"SDGB Tech 请求被拒绝：{message}")
+            return
+        yield event.plain_result(
+            f"任务已排队：{job.get('job_id')}\n内容：{job.get('summary')}"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("job", alias={"任务"})
+    async def tech_job(self, event: AstrMessageEvent, job_id: str):
+        """查询当前管理员的私有后端任务。"""
+        from .command.mai_tech import validate_identifier
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        if not self._tech_enabled():
+            yield event.plain_result("SDGB Tech 前端尚未启用")
+            return
+        try:
+            job = await call_backend(
+                "job_status",
+                actor=str(event.get_sender_id()),
+                job_id=validate_identifier(job_id, "任务号"),
+            )
+        except (BridgeError, ValueError) as exc:
+            message = exc.safe_message if isinstance(exc, BridgeError) else str(exc)
+            yield event.plain_result(f"SDGB Tech 请求被拒绝：{message}")
+            return
+        error = f"；错误码：{job.get('error_code')}" if job.get("error_code") else ""
+        yield event.plain_result(
+            f"任务 {job.get('job_id')}：{job.get('state')}{error}\n"
+            f"内容：{job.get('summary')}"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @tech.command("cancel", alias={"取消"})
+    async def tech_cancel(self, event: AstrMessageEvent, job_id: str):
+        """取消尚未开始的私有后端任务。"""
+        from .command.mai_tech import validate_identifier
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        if not self._tech_enabled():
+            yield event.plain_result("SDGB Tech 前端尚未启用")
+            return
+        try:
+            job = await call_backend(
+                "cancel",
+                actor=str(event.get_sender_id()),
+                job_id=validate_identifier(job_id, "任务号"),
+            )
+        except (BridgeError, ValueError) as exc:
+            message = exc.safe_message if isinstance(exc, BridgeError) else str(exc)
+            yield event.plain_result(f"SDGB Tech 请求被拒绝：{message}")
+            return
+        yield event.plain_result(
+            f"任务 {job.get('job_id')}：{job.get('state')}"
+        )
+
+    def _tech_enabled(self) -> bool:
+        return _config_bool(self.config, "tech_enabled", False)
+
+    def _set_tech_enabled(self, enabled: bool) -> None:
+        section = self.config.get("tech")
+        if not isinstance(section, dict):
+            section = {}
+            self.config["tech"] = section
+        section["tech_enabled"] = bool(enabled)
+        save = getattr(self.config, "save_config", None)
+        if callable(save):
+            save()
 
     @filter.regex(r'^群(?i:rating)(?:\s+([1-9][0-9]*))?$')
     async def group_rating(self, event: AstrMessageEvent):

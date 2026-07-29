@@ -124,5 +124,17 @@
         "default": ""
       }
     }
+  },
+  "tech": {
+    "description": "私有 SDGB Tech 后端",
+    "type": "object",
+    "items": {
+      "tech_enabled": {
+        "description": "启用 maibot Tech 指令前端",
+        "hint": "默认关闭。仅 AstrBot 超级管理员私聊可通过 /tech enable 开启；具体能力与写入仍由私有后端插件控制。",
+        "type": "bool",
+        "default": false
+      }
+    }
   }
 }

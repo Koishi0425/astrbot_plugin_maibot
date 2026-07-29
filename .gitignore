@@ -215,3 +215,5 @@ static/*
 # Local maimai resource packs are large and deployment-specific.
 resources/
 tests/
+
+astrbot插件手册.md

@@ -214,6 +214,10 @@ WebUI 配置项：
 - 水鱼公开 `chart_stats` 不提供全服总玩家数，因此 `谱面统计` 的“游玩率”使用同一首歌各难度统计样本的占比，不冒充全服游玩率。
 - 段位目录保存在 `static/dan_courses_cn_prism_plus.json`，课题曲依据 PRiSM PLUS 资料整理；国服发生本地化调整时应直接更新该数据文件。
 
+## 可选私有 Tech 后端
+
+该入口默认关闭。只有安装兼容的私有后端后，AstrBot 超级管理员才能在私聊中使用 `/tech status` 和 `/tech enable`
+
 ## 许可证
 
 MIT License
