@@ -506,16 +506,16 @@ class MaimaiDXPlugin(Star):
         ):
             yield result
 
+    @filter.command_group("tech")
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @filter.command_group("tech")
     def tech(self):
         """私有 SDGB Tech 后端指令。"""
         pass
 
+    @tech.command("status", alias={"状态"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("status", alias={"状态"})
     async def tech_status(self, event: AstrMessageEvent):
         """查看 maibot 与私有后端状态。"""
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
@@ -537,9 +537,9 @@ class MaimaiDXPlugin(Star):
             f"{status.get('safe_message', '')}"
         )
 
+    @tech.command("enable", alias={"开启"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("enable", alias={"开启"})
     async def tech_enable(self, event: AstrMessageEvent):
         """由 AstrBot 超级管理员同时开启前端与私有后端。"""
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
@@ -552,9 +552,9 @@ class MaimaiDXPlugin(Star):
             return
         yield event.plain_result("SDGB Tech 已启用；写入能力仍受后端独立开关控制")
 
+    @tech.command("disable", alias={"关闭"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("disable", alias={"关闭"})
     async def tech_disable(self, event: AstrMessageEvent):
         """关闭 maibot Tech 前端并请求关闭私有后端。"""
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
@@ -567,9 +567,9 @@ class MaimaiDXPlugin(Star):
             return
         yield event.plain_result("SDGB Tech 已关闭")
 
+    @tech.command("capabilities", alias={"能力"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("capabilities", alias={"能力"})
     async def tech_capabilities(self, event: AstrMessageEvent):
         """查看私有后端动态提供的能力。"""
         from .command.mai_tech import format_capabilities
@@ -585,9 +585,9 @@ class MaimaiDXPlugin(Star):
             return
         yield event.plain_result(format_capabilities(items))
 
+    @tech.command("preview", alias={"预览"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("preview", alias={"预览"})
     async def tech_preview(
         self,
         event: AstrMessageEvent,
@@ -620,9 +620,9 @@ class MaimaiDXPlugin(Star):
             f"/tech confirm {preview.get('plan_id')}"
         )
 
+    @tech.command("confirm", alias={"确认"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("confirm", alias={"确认"})
     async def tech_confirm(self, event: AstrMessageEvent, plan_id: str):
         """确认同一管理员生成的短时计划。"""
         from .command.mai_tech import validate_identifier
@@ -645,9 +645,9 @@ class MaimaiDXPlugin(Star):
             f"任务已排队：{job.get('job_id')}\n内容：{job.get('summary')}"
         )
 
+    @tech.command("job", alias={"任务"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("job", alias={"任务"})
     async def tech_job(self, event: AstrMessageEvent, job_id: str):
         """查询当前管理员的私有后端任务。"""
         from .command.mai_tech import validate_identifier
@@ -672,9 +672,9 @@ class MaimaiDXPlugin(Star):
             f"内容：{job.get('summary')}"
         )
 
+    @tech.command("cancel", alias={"取消"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    @tech.command("cancel", alias={"取消"})
     async def tech_cancel(self, event: AstrMessageEvent, job_id: str):
         """取消尚未开始的私有后端任务。"""
         from .command.mai_tech import validate_identifier
