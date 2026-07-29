@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 from aiohttp import ClientSession, ClientTimeout
 
@@ -136,6 +136,40 @@ class MaimaiAPI:
                 else:
                     raise UnknownError
         return data
+
+    async def update_records(
+        self,
+        *,
+        import_token: str,
+        records: Sequence[Dict[str, Any]],
+    ) -> Any:
+        """Upload records using a one-shot Diving-Fish Import-Token."""
+        token = str(import_token or "").strip()
+        if not token:
+            raise ValueError("Import-Token 不能为空")
+        if not records:
+            raise ValueError("没有可上传的成绩")
+        # Never send a user's Import-Token through the optional prober proxy.
+        url = self.MaiProberAPI + "/player/update_records"
+        async with ClientSession(timeout=ClientTimeout(total=60)) as session:
+            async with session.post(
+                url,
+                headers={"Import-Token": token},
+                json=list(records),
+            ) as res:
+                try:
+                    data = await res.json(content_type=None)
+                except Exception:
+                    data = {"message": (await res.text())[:200]}
+                if res.status != 200:
+                    message = ""
+                    if isinstance(data, dict):
+                        message = str(data.get("message") or data.get("msg") or "")
+                    raise RuntimeError(
+                        f"水鱼接口返回 HTTP {res.status}"
+                        + (f"：{message}" if message else "")
+                    )
+                return data
     
     async def music_data(self):
         """获取曲目数据"""

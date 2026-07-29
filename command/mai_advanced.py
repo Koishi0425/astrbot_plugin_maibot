@@ -14,9 +14,8 @@ from .. import (
 from ..libraries.image import image_to_base64, text_to_image
 from ..libraries.maimai_best_50 import computeRa
 from ..libraries.maimaidx_advanced import (
-    chart_distribution, course_catalog, field, find_latest_sdgb_dump, is_ap,
-    load_sdgb_cache, parse_qq_user_mapping, record_level_index, record_song_id,
-    save_sdgb_cache, sorted_records,
+    chart_distribution, course_catalog, field, is_ap, load_sdgb_cache,
+    record_level_index, record_song_id, sorted_records,
 )
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_identity import (
@@ -323,34 +322,14 @@ async def dan_table_handler(event: AstrMessageEvent):
     yield event.chain_result(_chain(event, _message("\n".join(lines))))
 
 
-async def update_sdgb_records_handler(event: AstrMessageEvent, dump_root: str, mapping_raw: Any):
-    identity = await resolve_sender_qq(event)
-    if identity.error:
-        yield event.plain_result(identity.error)
-        return
-    mapping = parse_qq_user_mapping(mapping_raw)
-    user_id = mapping.get(str(identity.qqid))
-    if not dump_root or not user_id:
-        yield event.plain_result("未配置该 QQ 对应的 sdgb userId 或 sdgb_dump_root；不会自动登录账号。")
-        return
-    try:
-        root = Path(dump_root).expanduser()
-        if not root.is_absolute():
-            root = (static.parent / root).resolve()
-        dump_dir, records = find_latest_sdgb_dump(root, user_id)
-        save_sdgb_cache(static / "sdgb_music_cache.json", str(identity.qqid), user_id, dump_dir, records)
-    except Exception as exc:
-        yield event.plain_result(f"更新记录失败：{exc}")
-        return
-    yield event.plain_result(f"已从 {dump_dir.name} 导入 {len(records)} 张谱面记录。该命令不会登录，也不会增加游玩次数。")
-
-
 async def pc50_handler(event: AstrMessageEvent):
     identity = await resolve_sender_qq(event)
-    if identity.error:
-        yield event.plain_result(identity.error)
-        return
-    cache = load_sdgb_cache(static / "sdgb_music_cache.json", str(identity.qqid))
+    cache_key = (
+        str(identity.qqid)
+        if not identity.error and identity.qqid
+        else str(event.get_sender_id())
+    )
+    cache = load_sdgb_cache(static / "sdgb_music_cache.json", cache_key)
     if not cache:
         yield event.plain_result("没有 sdgb 成绩缓存，请先执行“更新记录”。")
         return
@@ -358,6 +337,11 @@ async def pc50_handler(event: AstrMessageEvent):
         cache.get("records", []), limit=50,
         key=lambda record: (int(field(record, "playCount", 0) or 0), int(field(record, "achievement", 0) or 0)),
     )
-    lines = [f"PC50（按谱面游玩次数排序）  数据：{Path(cache.get('dumpDir', '')).name}"]
+    source = (
+        "SDGB Tech"
+        if cache.get("source") == "sdgbtech"
+        else Path(cache.get("dumpDir", "")).name
+    )
+    lines = [f"PC50（按谱面游玩次数排序）  数据：{source}"]
     lines.extend(_record_line(index, record, play_count=True) for index, record in enumerate(selected, 1))
     yield event.chain_result(_chain(event, _message("\n".join(lines))))

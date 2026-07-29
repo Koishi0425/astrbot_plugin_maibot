@@ -25,6 +25,12 @@ class QRRedactionTests(unittest.TestCase):
         self.assertTrue(_QRLogFilter().filter(record))
         self.assertNotIn(raw, record.getMessage())
 
+    def test_import_token_command_is_redacted(self):
+        token = "secret-import-token-123456"
+        redacted = redact_qr_text(f"上传水鱼 {token}")
+        self.assertEqual("上传水鱼 [REDACTED]", redacted)
+        self.assertNotIn(token, redacted)
+
 
 if __name__ == "__main__":
     unittest.main()

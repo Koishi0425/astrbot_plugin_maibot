@@ -21,7 +21,7 @@ import sys
 def _config_get(config: dict, key: str, default=None):
     if key in config:
         return config.get(key, default)
-    for section in ("basic", "prober", "alias", "arcade", "resource", "sdgb", "tech"):
+    for section in ("basic", "prober", "alias", "arcade", "resource", "tech"):
         section_config = config.get(section)
         if isinstance(section_config, dict) and key in section_config:
             return section_config.get(key, default)
@@ -43,7 +43,7 @@ def _config_bool(config: dict, key: str, default: bool) -> bool:
     return bool(value)
 
 
-@register("astrbot_plugin_maibot", "ZhiheZier", "maimaiDX插件", "1.4.0")
+@register("astrbot_plugin_maibot", "ZhiheZier", "maimaiDX插件", "1.6.0")
 class MaimaiDXPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -498,16 +498,81 @@ class MaimaiDXPlugin(Star):
 
     @filter.regex(r'^更新记录$')
     async def update_sdgb_records(self, event: AstrMessageEvent):
-        """从精确绑定 userId 的最新 sdgb dump 安全导入记录。"""
-        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+        """使用当前短时二维码登录并读取完整乐曲成绩。"""
+        if not self._tech_user_allowed(event):
             return
-        from .command.mai_advanced import update_sdgb_records_handler
-        async for result in update_sdgb_records_handler(
+        yield await self._tech_start_operation(
             event,
-            str(_config_get(self.config, "sdgb_dump_root", "") or "").strip(),
-            _config_get(self.config, "sdgb_user_bindings", ""),
+            "music_snapshot",
+            {},
+        )
+
+    @filter.regex(r"^上传水鱼\s+\S+$")
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    async def upload_diving_fish(self, event: AstrMessageEvent):
+        """使用一次性 Import-Token 上传当前用户的 Tech 成绩缓存。"""
+        if not self._tech_enabled():
+            return
+        if not _config_bool(
+            self.config,
+            "diving_fish_upload_enabled",
+            False,
         ):
-            yield result
+            yield event.plain_result(
+                "水鱼成绩上传默认关闭，请先由管理员在 maibot WebUI 中开启。"
+            )
+            return
+
+        from .libraries.maimaidx_advanced import (
+            build_diving_fish_records,
+            load_sdgb_cache,
+        )
+        from .libraries.maimaidx_identity import resolve_sender_qq
+
+        import_token = event.message_str.strip().split(None, 1)[1]
+        if len(import_token) > 512:
+            yield event.plain_result("Import-Token 格式无效。")
+            return
+        resolved = await resolve_sender_qq(event)
+        cache_key = (
+            str(resolved.qqid)
+            if not resolved.error and resolved.qqid
+            else str(event.get_sender_id())
+        )
+        cache = load_sdgb_cache(static / "sdgb_music_cache.json", cache_key)
+        if not cache or not isinstance(cache.get("records"), list):
+            yield event.plain_result(
+                "没有完整成绩缓存，请先发送二维码并执行“更新记录”。"
+            )
+            return
+        if str(cache.get("source_group") or "") not in self._tech_enabled_groups():
+            yield event.plain_result(
+                "该成绩缓存所属群当前未开放 Tech，请在已开放群中重新执行“更新记录”。"
+            )
+            return
+        payload, skipped = build_diving_fish_records(
+            cache["records"],
+            mai.total_list.by_id,
+        )
+        if not payload:
+            yield event.plain_result("缓存中没有可上传到水鱼的标准谱面成绩。")
+            return
+        try:
+            await maiApi.update_records(
+                import_token=import_token,
+                records=payload,
+            )
+        except Exception as exc:
+            yield event.plain_result(f"上传水鱼失败：{exc}")
+            return
+        yield event.plain_result(
+            f"已向水鱼提交 {len(payload)} 条成绩。"
+            + (
+                f" 跳过 {skipped} 条宴谱、未知曲目或异常记录。"
+                if skipped
+                else ""
+            )
+        )
 
     @filter.command_group("tech")
     def tech(self):
@@ -583,6 +648,18 @@ class MaimaiDXPlugin(Star):
             return
         yield event.plain_result(format_capabilities(items))
 
+    @tech.command("help", alias={"帮助"})
+    async def tech_help(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        yield event.plain_result(self._tech_help_text())
+
+    @filter.regex(r"^(?i:tech)帮助$")
+    async def tech_help_message(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        yield event.plain_result(self._tech_help_text())
+
     @tech.command("preview", alias={"预览"})
     async def tech_preview(
         self,
@@ -657,6 +734,16 @@ class MaimaiDXPlugin(Star):
             return
         error = f"；错误码：{job.get('error_code')}" if job.get("error_code") else ""
         result = job.get("result")
+        if (
+            job.get("state") == "completed"
+            and isinstance(result, dict)
+            and result.get("snapshot_ready") is True
+        ):
+            yield await self._tech_import_music_snapshot(
+                event,
+                str(job.get("job_id")),
+            )
+            return
         result_text = (
             f"\n结果：\n{result.get('text')}"
             if isinstance(result, dict) and result.get("text")
@@ -896,7 +983,10 @@ class MaimaiDXPlugin(Star):
         )
 
     @filter.regex(
-        r"^下埋\s+.+\s+[0-9]{1,3}(?:\.[0-9]{1,4})?%?$"
+        r"^下埋\s+.+\s+(?:"
+        r"[0-9]{1,3}(?:\.[0-9]{1,4})?%?|"
+        r"(?:極|极|将|神)(?:\+|＋)?|大将"
+        r")$"
     )
     async def tech_bury_score(self, event: AstrMessageEvent):
         if not self._tech_user_allowed(event):
@@ -990,7 +1080,7 @@ class MaimaiDXPlugin(Star):
             )
             chain = convert_message_segment_to_chain(picture)
             chain.append(Comp.Plain(
-                "\n二维码已生效；若不是目标账号，请直接发送新的 SGWCMAID 覆盖。\n"
+                "\n二维码已生效；\n"
                 f"二维码会话剩余约 {status.get('expires_in', 0)} 秒"
             ))
             return event.chain_result(chain)
@@ -1024,6 +1114,92 @@ class MaimaiDXPlugin(Star):
             f"任务已排队：{job.get('job_id')}\n"
             f"内容：{job.get('summary')}\n"
             "本次二维码凭据已销毁，可用 /tech job <任务号> 查询"
+        )
+
+    async def _tech_import_music_snapshot(
+        self,
+        event: AstrMessageEvent,
+        job_id: str,
+    ):
+        import astrbot.api.message_components as Comp
+        from .command.mai_base import convert_message_segment_to_chain
+        from .command.mai_tech import draw_identity_b50, enrich_identity_records
+        from .libraries.maimaidx_advanced import save_tech_music_cache
+        from .libraries.maimaidx_identity import resolve_sender_qq
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        records: list[dict] = []
+        identity: dict = {}
+        cursor = 0
+        try:
+            for _ in range(100):
+                page = await call_backend(
+                    "job_result_page",
+                    actor=self._tech_actor(event),
+                    job_id=job_id,
+                    cursor=cursor,
+                )
+                records.extend(page.get("records", []))
+                if not identity and isinstance(page.get("identity"), dict):
+                    identity = page["identity"]
+                next_cursor = page.get("next_cursor")
+                if next_cursor is None:
+                    break
+                cursor = int(next_cursor)
+            else:
+                raise ValueError("分页结果过多")
+        except (BridgeError, TypeError, ValueError) as exc:
+            message = exc.safe_message if isinstance(exc, BridgeError) else str(exc)
+            return event.plain_result(f"完整成绩导入失败：{message}")
+
+        resolved = await resolve_sender_qq(event)
+        cache_key = (
+            str(resolved.qqid)
+            if not resolved.error and resolved.qqid
+            else str(event.get_sender_id())
+        )
+        save_tech_music_cache(
+            static / "sdgb_music_cache.json",
+            cache_key,
+            records,
+            self._tech_group_id(event),
+        )
+        enriched = enrich_identity_records(identity, records)
+        try:
+            picture = await draw_identity_b50(
+                enriched,
+                str(event.get_sender_id()),
+            )
+            chain = convert_message_segment_to_chain(picture)
+            chain.append(Comp.Plain(
+                f"\n已导入 {len(records)} 张完整谱面记录；"
+                "DX 分、FC/AP、Sync 与 playCount 已写入缓存。"
+            ))
+            return event.chain_result(chain)
+        except Exception:
+            return event.plain_result(
+                f"已导入 {len(records)} 张完整谱面记录；"
+                "完整 B50 图片生成失败，但 PC50 缓存可以使用。"
+            )
+
+    @staticmethod
+    def _tech_help_text() -> str:
+        return (
+            "SDGB Tech 简明帮助\n"
+            "1. 发送 SGWCMAID...：载入一次性账号二维码并显示核对 B50\n"
+            "2. 更新记录：登录读取完整成绩；约一分钟后查询返回的任务号\n"
+            "3. /tech job <任务号>：导入完整成绩并生成含 DX/FC/Sync 的 B50\n"
+            "4. pc50：按完整缓存中的谱面游玩次数生成 PC50\n"
+            "5. 私聊：上传水鱼 <Import-Token>（WebUI 默认关闭）\n\n"
+            "账号操作：\n"
+            "解锁乐曲 <ID/别名>\n"
+            "发券 5｜开门 <青/白/紫/黑/黄/红>\n"
+            "获取收藏品 <plate/姓名框> <ID>\n"
+            "增加舞里程 <0~99900>\n"
+            "修改乐曲数据/覆盖乐曲数据 <歌曲> <难度> <完成度> "
+            "<连击> <同步> <DX星级>\n"
+            "下埋 <歌曲> <完成度/极/极+/将/将+/大将/神/神+>\n\n"
+            "每个登录任务消耗一个二维码；执行下一项前请重新发送二维码。"
         )
 
     async def _tech_score_operation(

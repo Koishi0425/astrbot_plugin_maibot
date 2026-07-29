@@ -64,6 +64,40 @@ def format_capabilities(items: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def enrich_identity_records(
+    identity: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge full GetUserMusic fields into no-login B35/B15 rows."""
+    record_map = {
+        (
+            int(item.get("musicId", 0) or 0),
+            int(item.get("level", -1)),
+        ): item
+        for item in records
+        if isinstance(item, dict)
+    }
+    enriched = dict(identity or {})
+    for list_name in ("old_best", "new_best"):
+        rows = []
+        for item in enriched.get(list_name, []) or []:
+            row = dict(item)
+            full = record_map.get((
+                int(row.get("musicId", 0) or 0),
+                int(row.get("level", -1)),
+            ))
+            if full:
+                for key in (
+                    "achievement", "deluxscoreMax",
+                    "comboStatus", "syncStatus", "playCount",
+                ):
+                    if key in full:
+                        row[key] = full[key]
+            rows.append(row)
+        enriched[list_name] = rows
+    return enriched
+
+
 async def draw_identity_b50(identity: dict[str, Any], qqid: str):
     """Render no-login GetUserRating B35/B15 data with maibot assets."""
     from .. import MessageSegment

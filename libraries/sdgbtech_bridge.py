@@ -24,6 +24,7 @@ ALLOWED_METHODS = {
     "preview",
     "confirm",
     "job_status",
+    "job_result_page",
     "cancel",
 }
 SENSITIVE_KEYS = {
@@ -33,6 +34,7 @@ SENSITIVE_KEYS = {
 }
 _backend: "SDGBTechBackend | None" = None
 QR_PATTERN = re.compile(r"SGWCMAID[^\s]{8,504}")
+IMPORT_TOKEN_COMMAND_PATTERN = re.compile(r"(?i)(上传水鱼\s+)(\S+)")
 
 
 class BridgeError(RuntimeError):
@@ -47,7 +49,8 @@ class SDGBTechBackend(Protocol):
 
 
 def redact_qr_text(value: str) -> str:
-    return QR_PATTERN.sub("SGWCMAID[REDACTED]", str(value))
+    value = QR_PATTERN.sub("SGWCMAID[REDACTED]", str(value))
+    return IMPORT_TOKEN_COMMAND_PATTERN.sub(r"\1[REDACTED]", value)
 
 
 class _QRLogFilter(logging.Filter):

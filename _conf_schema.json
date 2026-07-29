@@ -107,24 +107,6 @@
       }
     }
   },
-  "sdgb": {
-    "description": "sdgb 只读成绩导入",
-    "type": "object",
-    "items": {
-      "sdgb_dump_root": {
-        "description": "sdgb dump 根目录",
-        "hint": "例如 sdgb/debug_user_data。更新记录只读取已有 dump，不会自动登录账号。",
-        "type": "string",
-        "default": ""
-      },
-      "sdgb_user_bindings": {
-        "description": "QQ 与游戏 userId 映射",
-        "hint": "JSON 对象，例如 {\"123456789\":11279906}。只有 userId 精确匹配的 dump 才会被导入。",
-        "type": "string",
-        "default": ""
-      }
-    }
-  },
   "tech": {
     "description": "私有 SDGB Tech 后端",
     "type": "object",
@@ -140,6 +122,12 @@
         "hint": "逗号分隔。默认空，普通用户不能触发任何 Tech 功能；建议使用群内 /tech group_enable 管理。",
         "type": "string",
         "default": ""
+      },
+      "diving_fish_upload_enabled": {
+        "description": "允许上传成绩到 Diving-Fish",
+        "hint": "默认关闭。开启后，已开放 Tech 的群用户可私聊机器人发送“上传水鱼 <Import-Token>”，显式上传自己的完整成绩缓存；Token 不会保存。",
+        "type": "bool",
+        "default": false
       }
     }
   }

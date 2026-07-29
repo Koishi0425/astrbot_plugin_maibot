@@ -77,48 +77,13 @@ def chart_distribution(stats: Any) -> dict[str, float]:
     return {"fc_rate": fc / total * 100, "ap_rate": ap / total * 100}
 
 
-def flatten_sdgb_music(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for group in payload.get("userMusicList", []) or []:
-        for detail in group.get("userMusicDetailList", []) or []:
-            if isinstance(detail, Mapping):
-                result.append(dict(detail))
-    return result
-
-
-def find_latest_sdgb_dump(root: Path, user_id: int) -> tuple[Path, list[dict[str, Any]]]:
-    """Find the newest complete GetUserMusic dump for one exact game user id."""
-
-    candidates: list[tuple[float, Path, Path]] = []
-    if not root.exists():
-        raise FileNotFoundError(f"sdgb dump 根目录不存在：{root}")
-    for index_path in root.rglob("index.json"):
-        try:
-            index = json.loads(index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if int(index.get("userId", 0) or 0) != int(user_id):
-            continue
-        files = index.get("files", {}) or {}
-        names = [
-            files.get("GetUserMusicApi"),
-            "GetUserMusicApi_after_upsert.json",
-            "GetUserMusicApi.json",
-        ]
-        music_path = next(
-            (index_path.parent / name for name in names if name and (index_path.parent / name).exists()),
-            None,
-        )
-        if music_path:
-            candidates.append((music_path.stat().st_mtime, index_path, music_path))
-    if not candidates:
-        raise FileNotFoundError(f"没有找到 userId={user_id} 的 GetUserMusicApi dump")
-    _, index_path, music_path = max(candidates, key=lambda item: item[0])
-    payload = json.loads(music_path.read_text(encoding="utf-8"))
-    return index_path.parent, flatten_sdgb_music(payload)
-
-
-def save_sdgb_cache(cache_file: Path, qqid: str, user_id: int, dump_dir: Path, records: Sequence[Mapping[str, Any]]) -> None:
+def save_tech_music_cache(
+    cache_file: Path,
+    qqid: str,
+    records: Sequence[Mapping[str, Any]],
+    group_id: str,
+) -> None:
+    """Persist only sanitized records returned by the in-process Tech bridge."""
     cache: dict[str, Any] = {}
     if cache_file.exists():
         try:
@@ -126,12 +91,15 @@ def save_sdgb_cache(cache_file: Path, qqid: str, user_id: int, dump_dir: Path, r
         except (OSError, ValueError):
             cache = {}
     cache[str(qqid)] = {
-        "userId": int(user_id),
-        "dumpDir": str(dump_dir),
+        "source": "sdgbtech",
+        "source_group": str(group_id),
         "records": [dict(record) for record in records],
     }
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    cache_file.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def load_sdgb_cache(cache_file: Path, qqid: str) -> dict[str, Any] | None:
@@ -145,18 +113,56 @@ def load_sdgb_cache(cache_file: Path, qqid: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def parse_qq_user_mapping(raw: Any) -> dict[str, int]:
-    if isinstance(raw, Mapping):
-        source = raw
-    elif isinstance(raw, str) and raw.strip():
-        source = json.loads(raw)
-    else:
-        return {}
-    result: dict[str, int] = {}
-    for qqid, user_id in source.items():
-        if str(qqid).isdigit() and str(user_id).isdigit():
-            result[str(qqid)] = int(user_id)
-    return result
+def build_diving_fish_records(
+    records: Sequence[Mapping[str, Any]],
+    music_by_id: Callable[[int], Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """Convert sanitized SDGB records to Diving-Fish's import schema."""
+
+    combo_status = {0: "", 1: "fc", 2: "fcp", 3: "ap", 4: "app"}
+    sync_status = {
+        0: "",
+        1: "sync",
+        2: "fs",
+        3: "fsp",
+        4: "fsd",
+        5: "fsdp",
+    }
+    converted: list[dict[str, Any]] = []
+    skipped = 0
+    for record in records:
+        try:
+            if not {"musicId", "level", "achievement"} <= set(record):
+                skipped += 1
+                continue
+            music_id = int(field(record, "musicId", 0) or 0)
+            level_index = int(field(record, "level", -1))
+            music = music_by_id(music_id)
+            if music is None or level_index not in range(5):
+                skipped += 1
+                continue
+            achievement = int(field(record, "achievement", 0) or 0) / 10000
+            if not 0 <= achievement <= 101:
+                skipped += 1
+                continue
+            converted.append({
+                "achievements": achievement,
+                "dxScore": max(0, int(field(record, "deluxscoreMax", 0) or 0)),
+                "fc": combo_status.get(
+                    int(field(record, "comboStatus", 0) or 0),
+                    "",
+                ),
+                "fs": sync_status.get(
+                    int(field(record, "syncStatus", 0) or 0),
+                    "",
+                ),
+                "level_index": level_index,
+                "title": str(field(music, "title", "") or ""),
+                "type": str(field(music, "type", "") or "").upper(),
+            })
+        except (TypeError, ValueError):
+            skipped += 1
+    return converted, skipped
 
 
 def course_catalog(path: Path) -> dict[str, Any]:
