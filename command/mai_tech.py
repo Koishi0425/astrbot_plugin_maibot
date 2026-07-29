@@ -62,3 +62,73 @@ def format_capabilities(items: list[dict[str, Any]]) -> str:
         rows.append("- 当前没有可用能力")
     rows.append("参数格式：key=value,key=value；无参数使用 -")
     return "\n".join(rows)
+
+
+async def draw_identity_b50(identity: dict[str, Any], qqid: str):
+    """Render no-login GetUserRating B35/B15 data with maibot assets."""
+    from .. import MessageSegment
+    from ..libraries.image import image_to_base64
+    from ..libraries.maimai_best_50 import DrawBest, computeRa
+    from ..libraries.maimaidx_model import ChartInfo, Data, UserInfo
+    from ..libraries.maimaidx_music import mai
+
+    fc_names = {1: "fc", 2: "fcp", 3: "ap", 4: "app"}
+    fs_names = {
+        1: "sync", 2: "fs", 3: "fsp", 4: "fsd", 5: "fsdp",
+    }
+
+    def convert(rows: list[dict[str, Any]]) -> list[ChartInfo]:
+        result = []
+        for row in rows:
+            song_id = int(row.get("musicId", 0) or 0)
+            level_index = int(row.get("level", -1))
+            music = mai.total_list.by_id(str(song_id))
+            if (
+                music is None
+                or level_index < 0
+                or level_index >= len(music.ds)
+            ):
+                continue
+            achievement = float(row.get("achievement", 0) or 0)
+            if achievement > 1000:
+                achievement /= 10000
+            ra, rate = computeRa(
+                float(music.ds[level_index]),
+                achievement,
+                israte=True,
+            )
+            result.append(ChartInfo(
+                achievements=achievement,
+                fc=fc_names.get(int(row.get("comboStatus", 0) or 0), ""),
+                fs=fs_names.get(int(row.get("syncStatus", 0) or 0), ""),
+                level=str(music.level[level_index]),
+                level_index=level_index,
+                level_label=("Basic", "Advanced", "Expert", "Master", "Re:Master")[
+                    level_index
+                ],
+                title=music.title,
+                type=music.type,
+                ds=float(music.ds[level_index]),
+                dxScore=int(row.get("deluxscoreMax", 0) or 0),
+                ra=ra,
+                rate=rate,
+                song_id=song_id,
+            ))
+        return result
+
+    user = UserInfo(
+        additional_rating=max(
+            0,
+            min(int(identity.get("additional_rating", 0) or 0), 30),
+        ),
+        nickname=str(identity.get("nickname") or "未知玩家")[:32],
+        plate=None,
+        rating=int(identity.get("rating", 0) or 0),
+        username=None,
+        charts=Data(
+            sd=convert(list(identity.get("old_best", []) or [])),
+            dx=convert(list(identity.get("new_best", []) or [])),
+        ),
+    )
+    image = await DrawBest(user, qqid).draw()
+    return MessageSegment.image(image_to_base64(image))

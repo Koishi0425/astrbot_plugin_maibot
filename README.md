@@ -216,7 +216,16 @@ WebUI 配置项：
 
 ## 可选私有 Tech 后端
 
-该入口默认关闭。只有安装兼容的私有后端后，AstrBot 超级管理员才能在私聊中使用 `/tech status` 和 `/tech enable`
+该入口默认关闭，群白名单默认也为空。安装兼容私有后端后：
+
+1. 超级管理员私聊执行 `/tech status`、`/tech enable`；
+2. 超级管理员在目标群执行 `/tech group_enable`；
+3. 该群普通用户才能发送 `SGWCMAID...` 并使用已配置的全部 Tech 能力；
+4. `/tech group_disable` 会立即阻止该群继续触发前端处理器。
+
+二维码会话绑定“群号 + QQ号”，仅在内存中短期保存；解析成功即授权，B50 只用于
+核对，发错时直接发送新二维码覆盖。每次登录
+任务消费一个二维码。完整命令与私有配置见 `astrbot_plugin_sdgbtech/README.md`。
 
 ## 许可证
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
+import re
 from typing import Any, Protocol
 
 
@@ -16,6 +18,9 @@ ALLOWED_METHODS = {
     "status",
     "set_enabled",
     "capabilities",
+    "submit_qr",
+    "credential_status",
+    "revoke_credential",
     "preview",
     "confirm",
     "job_status",
@@ -27,6 +32,7 @@ SENSITIVE_KEYS = {
     "aes_key", "aes_iv", "stdout", "stderr", "command", "path",
 }
 _backend: "SDGBTechBackend | None" = None
+QR_PATTERN = re.compile(r"SGWCMAID[^\s]{8,504}")
 
 
 class BridgeError(RuntimeError):
@@ -38,6 +44,41 @@ class BridgeError(RuntimeError):
 
 class SDGBTechBackend(Protocol):
     protocol_version: int
+
+
+def redact_qr_text(value: str) -> str:
+    return QR_PATTERN.sub("SGWCMAID[REDACTED]", str(value))
+
+
+class _QRLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_qr_text(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_qr_text(item) if isinstance(item, str) else item
+                for item in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: redact_qr_text(item) if isinstance(item, str) else item
+                for key, item in record.args.items()
+            }
+        return True
+
+
+_qr_log_filter: _QRLogFilter | None = None
+
+
+def install_qr_log_redaction() -> None:
+    global _qr_log_filter
+    if _qr_log_filter is not None:
+        return
+    _qr_log_filter = _QRLogFilter()
+    root = logging.getLogger()
+    root.addFilter(_qr_log_filter)
+    for handler in root.handlers:
+        handler.addFilter(_qr_log_filter)
 
 
 def register_backend(backend: SDGBTechBackend) -> None:

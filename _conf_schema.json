@@ -134,6 +134,12 @@
         "hint": "默认关闭。仅 AstrBot 超级管理员私聊可通过 /tech enable 开启；具体能力与写入仍由私有后端插件控制。",
         "type": "bool",
         "default": false
+      },
+      "tech_enabled_groups": {
+        "description": "允许普通用户使用 Tech 的群号",
+        "hint": "逗号分隔。默认空，普通用户不能触发任何 Tech 功能；建议使用群内 /tech group_enable 管理。",
+        "type": "string",
+        "default": ""
       }
     }
   }

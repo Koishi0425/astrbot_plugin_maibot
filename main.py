@@ -7,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 import asyncio
 import traceback
 import json
+import re
 from pathlib import Path
 
 from . import Root, log, loga, ratingdir, platedir, plate_to_dx_version, platecn, static, _BOTNAME
@@ -42,11 +43,13 @@ def _config_bool(config: dict, key: str, default: bool) -> bool:
     return bool(value)
 
 
-@register("astrbot_plugin_maimaidx", "ZhiheZier", "maimaiDX插件", "1.1.1")
+@register("astrbot_plugin_maibot", "ZhiheZier", "maimaiDX插件", "1.4.0")
 class MaimaiDXPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config if config is not None else {}
+        from .libraries.sdgbtech_bridge import install_qr_log_redaction
+        install_qr_log_redaction()
         self.scheduler = AsyncIOScheduler()
         self.scheduler.start()
         
@@ -507,8 +510,6 @@ class MaimaiDXPlugin(Star):
             yield result
 
     @filter.command_group("tech")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     def tech(self):
         """私有 SDGB Tech 后端指令。"""
         pass
@@ -568,15 +569,12 @@ class MaimaiDXPlugin(Star):
         yield event.plain_result("SDGB Tech 已关闭")
 
     @tech.command("capabilities", alias={"能力"})
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def tech_capabilities(self, event: AstrMessageEvent):
         """查看私有后端动态提供的能力。"""
         from .command.mai_tech import format_capabilities
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
 
-        if not self._tech_enabled():
-            yield event.plain_result("SDGB Tech 前端尚未启用")
+        if not self._tech_user_allowed(event):
             return
         try:
             items = await call_backend("capabilities")
@@ -586,8 +584,6 @@ class MaimaiDXPlugin(Star):
         yield event.plain_result(format_capabilities(items))
 
     @tech.command("preview", alias={"预览"})
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def tech_preview(
         self,
         event: AstrMessageEvent,
@@ -598,13 +594,12 @@ class MaimaiDXPlugin(Star):
         from .command.mai_tech import parse_parameters, validate_capability
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
 
-        if not self._tech_enabled():
-            yield event.plain_result("SDGB Tech 前端尚未启用")
+        if not self._tech_user_allowed(event):
             return
         try:
             preview = await call_backend(
                 "preview",
-                actor=str(event.get_sender_id()),
+                actor=self._tech_actor(event),
                 capability=validate_capability(capability),
                 parameters=parse_parameters(parameters),
             )
@@ -621,20 +616,17 @@ class MaimaiDXPlugin(Star):
         )
 
     @tech.command("confirm", alias={"确认"})
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def tech_confirm(self, event: AstrMessageEvent, plan_id: str):
         """确认同一管理员生成的短时计划。"""
         from .command.mai_tech import validate_identifier
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
 
-        if not self._tech_enabled():
-            yield event.plain_result("SDGB Tech 前端尚未启用")
+        if not self._tech_user_allowed(event):
             return
         try:
             job = await call_backend(
                 "confirm",
-                actor=str(event.get_sender_id()),
+                actor=self._tech_actor(event),
                 plan_id=validate_identifier(plan_id, "确认码"),
             )
         except (BridgeError, ValueError) as exc:
@@ -646,20 +638,17 @@ class MaimaiDXPlugin(Star):
         )
 
     @tech.command("job", alias={"任务"})
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def tech_job(self, event: AstrMessageEvent, job_id: str):
         """查询当前管理员的私有后端任务。"""
         from .command.mai_tech import validate_identifier
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
 
-        if not self._tech_enabled():
-            yield event.plain_result("SDGB Tech 前端尚未启用")
+        if not self._tech_user_allowed(event):
             return
         try:
             job = await call_backend(
                 "job_status",
-                actor=str(event.get_sender_id()),
+                actor=self._tech_actor(event),
                 job_id=validate_identifier(job_id, "任务号"),
             )
         except (BridgeError, ValueError) as exc:
@@ -667,26 +656,29 @@ class MaimaiDXPlugin(Star):
             yield event.plain_result(f"SDGB Tech 请求被拒绝：{message}")
             return
         error = f"；错误码：{job.get('error_code')}" if job.get("error_code") else ""
+        result = job.get("result")
+        result_text = (
+            f"\n结果：\n{result.get('text')}"
+            if isinstance(result, dict) and result.get("text")
+            else ""
+        )
         yield event.plain_result(
             f"任务 {job.get('job_id')}：{job.get('state')}{error}\n"
-            f"内容：{job.get('summary')}"
+            f"内容：{job.get('summary')}{result_text}"
         )
 
     @tech.command("cancel", alias={"取消"})
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def tech_cancel(self, event: AstrMessageEvent, job_id: str):
         """取消尚未开始的私有后端任务。"""
         from .command.mai_tech import validate_identifier
         from .libraries.sdgbtech_bridge import BridgeError, call_backend
 
-        if not self._tech_enabled():
-            yield event.plain_result("SDGB Tech 前端尚未启用")
+        if not self._tech_user_allowed(event):
             return
         try:
             job = await call_backend(
                 "cancel",
-                actor=str(event.get_sender_id()),
+                actor=self._tech_actor(event),
                 job_id=validate_identifier(job_id, "任务号"),
             )
         except (BridgeError, ValueError) as exc:
@@ -697,8 +689,398 @@ class MaimaiDXPlugin(Star):
             f"任务 {job.get('job_id')}：{job.get('state')}"
         )
 
+    @tech.command("group_enable", alias={"开启本群"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def tech_group_enable(self, event: AstrMessageEvent):
+        """允许当前群普通用户使用全部已开放 Tech 能力。"""
+        group_id = self._tech_group_id(event)
+        if not group_id:
+            return
+        self._set_tech_group(group_id, True)
+        yield event.plain_result("本群 Tech 功能已开启")
+
+    @tech.command("group_disable", alias={"关闭本群"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def tech_group_disable(self, event: AstrMessageEvent):
+        """关闭当前群普通用户的全部 Tech 能力。"""
+        group_id = self._tech_group_id(event)
+        if not group_id:
+            return
+        self._set_tech_group(group_id, False)
+        yield event.plain_result("本群 Tech 功能已关闭")
+
+    @tech.command("group_status", alias={"本群状态"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def tech_group_status(self, event: AstrMessageEvent):
+        group_id = self._tech_group_id(event)
+        if not group_id:
+            return
+        yield event.plain_result(
+            "本群 Tech 功能："
+            + ("已开启" if group_id in self._tech_enabled_groups() else "已关闭")
+        )
+
+    @tech.command("qr", alias={"二维码"})
+    async def tech_qr(
+        self,
+        event: AstrMessageEvent,
+        qr_code: str,
+    ):
+        """在已开放群中提交一次短时二维码。"""
+        if not self._tech_user_allowed(event):
+            return
+        yield await self._tech_submit_qr(event, qr_code)
+
+    @filter.regex(r"^SGWCMAID[^\s]{8,504}$")
+    async def tech_qr_message(self, event: AstrMessageEvent):
+        """直接识别群内短时二维码。"""
+        if not self._tech_user_allowed(event):
+            return
+        yield await self._tech_submit_qr(
+            event,
+            event.message_str.strip(),
+        )
+
+    @tech.command("account", alias={"账号状态"})
+    async def tech_account(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+        try:
+            status = await call_backend(
+                "credential_status",
+                actor=self._tech_actor(event),
+            )
+        except BridgeError as exc:
+            yield event.plain_result(f"账号状态：{exc.safe_message}")
+            return
+        identity = status.get("identity", {})
+        yield event.plain_result(
+            f"账号：{identity.get('nickname', '未知玩家')}；"
+            f"Rating {identity.get('rating', 0)}；"
+            f"{'已确认' if status.get('confirmed') else '等待确认'}；"
+            f"剩余约 {status.get('expires_in', 0)} 秒"
+        )
+
+    @tech.command("revoke", alias={"撤销账号"})
+    async def tech_revoke(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+        try:
+            await call_backend(
+                "revoke_credential",
+                actor=self._tech_actor(event),
+            )
+        except BridgeError as exc:
+            yield event.plain_result(f"撤销失败：{exc.safe_message}")
+            return
+        yield event.plain_result("短时二维码会话已撤销")
+
+    @filter.regex(r"^解锁乐曲\s+\S.*$")
+    async def tech_unlock_song(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        query = event.message_str.strip()[len("解锁乐曲"):].strip()
+        song_id, error = self._tech_resolve_song(query)
+        if error:
+            yield event.plain_result(error)
+            return
+        yield await self._tech_start_operation(
+            event,
+            "song_unlock",
+            {"song_id": str(song_id)},
+        )
+
+    @filter.regex(r"^发券\s+[235]$")
+    async def tech_grant_ticket(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        multiplier = int(event.message_str.strip().split()[-1])
+        if multiplier != 5:
+            yield event.plain_result(
+                "当前手册只确认新版本 5 倍票的 chargeId 和提交结构；"
+                "2/3 倍票未确认，已拒绝执行"
+            )
+            return
+        yield await self._tech_start_operation(
+            event,
+            "grant_5x_ticket",
+            {},
+        )
+
+    @filter.regex(r"^开门\s+(青|白|紫|黑|黄|红)$")
+    async def tech_open_gate(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        color = event.message_str.strip().split()[-1]
+        gate_id = {
+            "青": 1, "白": 2, "紫": 3,
+            "黑": 4, "黄": 5, "红": 6,
+        }[color]
+        yield await self._tech_start_operation(
+            event,
+            "kaleidx_key",
+            {"gate_id": str(gate_id), "open_gate": "true"},
+        )
+
+    @filter.regex(r"^获取收藏品\s+\S+\s+[1-9][0-9]*$")
+    async def tech_grant_collection(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        _, collection_type, item_id = event.message_str.strip().split()
+        normalized = {
+            "plate": "plate",
+            "姓名框": "plate",
+            "名牌": "plate",
+        }.get(collection_type.lower())
+        if normalized is None:
+            yield event.plain_result(
+                "当前只有 plate/姓名框 的 itemKind=1 经过实测，"
+                "其他收藏品类型已拒绝执行"
+            )
+            return
+        yield await self._tech_start_operation(
+            event,
+            "collection_grant",
+            {
+                "collection_type": normalized,
+                "item_id": item_id,
+            },
+        )
+
+    @filter.regex(r"^增加舞里程\s+[0-9]{1,5}$")
+    async def tech_add_mileage(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        delta = int(event.message_str.strip().split()[-1])
+        if not 0 <= delta <= 99900:
+            yield event.plain_result("舞里程增量必须为 0 到 99900")
+            return
+        if delta == 0:
+            yield event.plain_result("舞里程增量为 0，未登录账号，也未修改任何数据")
+            return
+        yield await self._tech_start_operation(
+            event,
+            "mileage_add",
+            {"delta": str(delta)},
+        )
+
+    @filter.regex(
+        r"^修改乐曲数据\s+.+\s+(绿|黄|红|紫|白|宴)\s+"
+        r"[0-9]{1,3}(?:\.[0-9]{1,4})?%?\s+"
+        r"(none|fc|fc\+|ap|ap\+)\s+"
+        r"(none|fs|fs\+|fdx|fdx\+|sync)\s+[0-5]$"
+    )
+    async def tech_merge_score(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        yield await self._tech_score_operation(
+            event, "score_merge", "修改乐曲数据"
+        )
+
+    @filter.regex(
+        r"^覆盖乐曲数据\s+.+\s+(绿|黄|红|紫|白|宴)\s+"
+        r"[0-9]{1,3}(?:\.[0-9]{1,4})?%?\s+"
+        r"(none|fc|fc\+|ap|ap\+)\s+"
+        r"(none|fs|fs\+|fdx|fdx\+|sync)\s+[0-5]$"
+    )
+    async def tech_overwrite_score(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        yield await self._tech_score_operation(
+            event, "score_overwrite", "覆盖乐曲数据"
+        )
+
+    @filter.regex(
+        r"^下埋\s+.+\s+[0-9]{1,3}(?:\.[0-9]{1,4})?%?$"
+    )
+    async def tech_bury_score(self, event: AstrMessageEvent):
+        if not self._tech_user_allowed(event):
+            return
+        body = event.message_str.strip()[len("下埋"):].strip()
+        try:
+            query, achievement = body.rsplit(None, 1)
+        except ValueError:
+            return
+        song_id, error = self._tech_resolve_song(query.strip())
+        if error:
+            yield event.plain_result(error)
+            return
+        yield await self._tech_start_operation(
+            event,
+            "bury_score",
+            {
+                "song_id": str(song_id),
+                "achievement": achievement,
+            },
+        )
+
     def _tech_enabled(self) -> bool:
         return _config_bool(self.config, "tech_enabled", False)
+
+    def _tech_enabled_groups(self) -> set[str]:
+        value = _config_get(self.config, "tech_enabled_groups", "")
+        if isinstance(value, (list, tuple, set)):
+            return {str(item).strip() for item in value if str(item).strip()}
+        return {
+            item.strip()
+            for item in str(value or "").split(",")
+            if item.strip()
+        }
+
+    @staticmethod
+    def _tech_group_id(event: AstrMessageEvent) -> str:
+        return str(getattr(event.message_obj, "group_id", "") or "").strip()
+
+    @classmethod
+    def _tech_actor(cls, event: AstrMessageEvent) -> str:
+        """Bind QR sessions and jobs to both the QQ user and current group."""
+        return (
+            f"group:{cls._tech_group_id(event)}:"
+            f"user:{str(event.get_sender_id()).strip()}"
+        )
+
+    def _tech_user_allowed(self, event: AstrMessageEvent) -> bool:
+        group_id = self._tech_group_id(event)
+        return bool(
+            self._tech_enabled()
+            and group_id
+            and group_id in self._tech_enabled_groups()
+        )
+
+    def _set_tech_group(self, group_id: str, enabled: bool) -> None:
+        groups = self._tech_enabled_groups()
+        if enabled:
+            groups.add(str(group_id))
+        else:
+            groups.discard(str(group_id))
+        section = self.config.get("tech")
+        if not isinstance(section, dict):
+            section = {}
+            self.config["tech"] = section
+        section["tech_enabled_groups"] = ",".join(sorted(groups))
+        save = getattr(self.config, "save_config", None)
+        if callable(save):
+            save()
+
+    async def _tech_submit_qr(
+        self,
+        event: AstrMessageEvent,
+        qr_code: str,
+    ):
+        import astrbot.api.message_components as Comp
+        from .command.mai_base import convert_message_segment_to_chain
+        from .command.mai_tech import draw_identity_b50
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+
+        try:
+            status = await call_backend(
+                "submit_qr",
+                actor=self._tech_actor(event),
+                qr_code=str(qr_code),
+            )
+            identity = status.get("identity", {})
+            picture = await draw_identity_b50(
+                identity,
+                str(event.get_sender_id()),
+            )
+            chain = convert_message_segment_to_chain(picture)
+            chain.append(Comp.Plain(
+                "\n二维码已生效；若不是目标账号，请直接发送新的 SGWCMAID 覆盖。\n"
+                f"二维码会话剩余约 {status.get('expires_in', 0)} 秒"
+            ))
+            return event.chain_result(chain)
+        except BridgeError as exc:
+            return event.plain_result(f"二维码识别失败：{exc.safe_message}")
+        except Exception:
+            return event.plain_result("二维码已生效，但 B50 图片生成失败")
+
+    async def _tech_start_operation(
+        self,
+        event: AstrMessageEvent,
+        capability: str,
+        parameters: dict[str, str],
+    ):
+        from .libraries.sdgbtech_bridge import BridgeError, call_backend
+        try:
+            preview = await call_backend(
+                "preview",
+                actor=self._tech_actor(event),
+                capability=capability,
+                parameters=parameters,
+            )
+            job = await call_backend(
+                "confirm",
+                actor=self._tech_actor(event),
+                plan_id=str(preview["plan_id"]),
+            )
+        except BridgeError as exc:
+            return event.plain_result(f"Tech 操作被拒绝：{exc.safe_message}")
+        return event.plain_result(
+            f"任务已排队：{job.get('job_id')}\n"
+            f"内容：{job.get('summary')}\n"
+            "本次二维码凭据已销毁，可用 /tech job <任务号> 查询"
+        )
+
+    async def _tech_score_operation(
+        self,
+        event: AstrMessageEvent,
+        capability: str,
+        prefix: str,
+    ):
+        body = event.message_str.strip()[len(prefix):].strip()
+        try:
+            query, difficulty, achievement, combo, sync, dx_stars = body.rsplit(
+                None, 5
+            )
+        except ValueError:
+            return event.plain_result(
+                f"格式：{prefix} <歌曲ID/别名> <绿/黄/红/紫/白/宴> "
+                "<完成度0.00-101.00> <none/fc/fc+/ap/ap+> "
+                "<none/fs/fs+/fdx/fdx+/sync> <DX星级0-5>"
+            )
+        song_id, error = self._tech_resolve_song(query)
+        if error:
+            return event.plain_result(error)
+        return await self._tech_start_operation(
+            event,
+            capability,
+            {
+                "song_id": str(song_id),
+                "level": str(self._tech_difficulty_level(difficulty)),
+                "achievement": achievement,
+                "combo": combo,
+                "sync": sync,
+                "dx_stars": dx_stars,
+            },
+        )
+
+    @staticmethod
+    def _tech_difficulty_level(value: str) -> int:
+        return {
+            "绿": 0, "黄": 1, "红": 2, "紫": 3, "白": 4, "宴": 10,
+        }[str(value)]
+
+    @staticmethod
+    def _tech_resolve_song(query: str) -> tuple[int | None, str | None]:
+        if query.isdigit() and (music := mai.total_list.by_id(query)):
+            return int(music.id), None
+        if music := mai.total_list.by_title(query):
+            return int(music.id), None
+        aliases = mai.total_alias_list.by_alias(query)
+        if not aliases:
+            return None, "没有找到该乐曲或别名"
+        if len(aliases) != 1:
+            choices = "、".join(
+                f"{item.SongID}:{item.Name}"
+                for item in aliases[:8]
+            )
+            return None, f"别名不唯一，请改用歌曲 ID：{choices}"
+        return int(aliases[0].SongID), None
 
     def _set_tech_enabled(self, enabled: bool) -> None:
         section = self.config.get("tech")
