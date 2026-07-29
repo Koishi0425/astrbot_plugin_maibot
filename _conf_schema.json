@@ -106,5 +106,23 @@
         "default": true
       }
     }
+  },
+  "sdgb": {
+    "description": "sdgb 只读成绩导入",
+    "type": "object",
+    "items": {
+      "sdgb_dump_root": {
+        "description": "sdgb dump 根目录",
+        "hint": "例如 sdgb/debug_user_data。更新记录只读取已有 dump，不会自动登录账号。",
+        "type": "string",
+        "default": ""
+      },
+      "sdgb_user_bindings": {
+        "description": "QQ 与游戏 userId 映射",
+        "hint": "JSON 对象，例如 {\"123456789\":11279906}。只有 userId 精确匹配的 dump 才会被导入。",
+        "type": "string",
+        "default": ""
+      }
+    }
   }
 }

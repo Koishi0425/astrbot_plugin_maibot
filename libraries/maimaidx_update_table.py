@@ -197,8 +197,8 @@ async def update_plate_table() -> str:
     try:
         platedir.mkdir(parents=True, exist_ok=True)
         version = list(_ for _ in plate_to_dx_version.keys())[1:]
-        # version.append('霸')
-        # version.append('舞')
+        # 舞/霸覆盖旧框全版本，需要独立的五难度版式。
+        version.extend(['霸', '舞'])
         id_bg = Image.open(maimaidir / 'border_table_base.png')
         rlv: Dict[str, List[Music]] = {}
         for _ in list(reversed(levelList)):

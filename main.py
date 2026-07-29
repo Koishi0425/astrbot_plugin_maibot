@@ -20,7 +20,7 @@ import sys
 def _config_get(config: dict, key: str, default=None):
     if key in config:
         return config.get(key, default)
-    for section in ("basic", "prober", "alias", "arcade", "resource"):
+    for section in ("basic", "prober", "alias", "arcade", "resource", "sdgb"):
         section_config = config.get(section)
         if isinstance(section_config, dict) and key in section_config:
             return section_config.get(key, default)
@@ -457,6 +457,55 @@ class MaimaiDXPlugin(Star):
         async for result in best50_handler(event):
             yield result
 
+    @filter.regex(r'^(b40|B40)\s*(.*)$')
+    async def best40(self, event: AstrMessageEvent):
+        """全谱面 Rating 前 40。"""
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import top_records_handler
+        async for result in top_records_handler(event, "b40"):
+            yield result
+
+    @filter.regex(r'^(ap50|AP50)\s*(.*)$')
+    async def ap50(self, event: AstrMessageEvent):
+        """AP/AP+ 谱面 Rating 前 50。"""
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import top_records_handler
+        async for result in top_records_handler(event, "ap50"):
+            yield result
+
+    @filter.regex(r'^(pc50|PC50)$')
+    async def pc50(self, event: AstrMessageEvent):
+        """按 sdgb 谱面游玩次数生成 PC50。"""
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import pc50_handler
+        async for result in pc50_handler(event):
+            yield result
+
+    @filter.regex(r'^(pk50|PK50)\s+(.+)$')
+    async def pk50(self, event: AstrMessageEvent):
+        """比较两名玩家的 B50。"""
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import pk50_handler
+        async for result in pk50_handler(event):
+            yield result
+
+    @filter.regex(r'^更新记录$')
+    async def update_sdgb_records(self, event: AstrMessageEvent):
+        """从精确绑定 userId 的最新 sdgb dump 安全导入记录。"""
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import update_sdgb_records_handler
+        async for result in update_sdgb_records_handler(
+            event,
+            str(_config_get(self.config, "sdgb_dump_root", "") or "").strip(),
+            _config_get(self.config, "sdgb_user_bindings", ""),
+        ):
+            yield result
+
     @filter.regex(r'^群(?i:rating)(?:\s+([1-9][0-9]*))?$')
     async def group_rating(self, event: AstrMessageEvent):
         """群 Rating 排行"""
@@ -525,6 +574,14 @@ class MaimaiDXPlugin(Star):
             return
         from .command.mai_score import ginfo_handler
         async for result in ginfo_handler(event):
+            yield result
+
+    @filter.regex(r'^(谱面统计|chart stats)\s+(.+)$')
+    async def chart_statistics(self, event: AstrMessageEvent):
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import chart_statistics_handler
+        async for result in chart_statistics_handler(event):
             yield result
 
     @filter.regex(r'^分数线\s*(.*)$')
@@ -596,6 +653,14 @@ class MaimaiDXPlugin(Star):
             return
         from .command.mai_search import search_charter_handler
         async for result in search_charter_handler(event):
+            yield result
+
+    @filter.regex(r'^(版本查歌|search version)\s*(.*)$')
+    async def search_version(self, event: AstrMessageEvent):
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import version_search_handler
+        async for result in version_search_handler(event):
             yield result
 
     @filter.regex(r'^(.+?)(是什么歌|是啥歌)$')
@@ -738,6 +803,22 @@ class MaimaiDXPlugin(Star):
             return
         from .command.mai_table import level_process_handler
         async for result in level_process_handler(event):
+            yield result
+
+    @filter.regex(r'^分类进度(?:\s+.*)?$')
+    async def category_progress(self, event: AstrMessageEvent):
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import category_progress_handler
+        async for result in category_progress_handler(event):
+            yield result
+
+    @filter.regex(r'^(段位表|段位课题)(?:\s*.*)?$')
+    async def dan_table(self, event: AstrMessageEvent):
+        if event.message_obj.group_id and not self._is_group_enabled(str(event.message_obj.group_id)):
+            return
+        from .command.mai_advanced import dan_table_handler
+        async for result in dan_table_handler(event):
             yield result
 
     @filter.regex(r'^([0-9]+\.?[0-9]?\+?)分数列表\s?([0-9]+)?\s?(.+)?$')

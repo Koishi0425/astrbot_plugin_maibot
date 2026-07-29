@@ -598,16 +598,20 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
         """
         music.sort(key=lambda x: x.ds[3], reverse=True)
         number = 4 if version not in ['霸', '舞'] else 5
+        remaster_ids = set(mai.total_plate_id_list.get('舞ReMASTER', [])) if number == 5 else set()
         for _m in music:
             if _m.level[3] not in ra:
                 ra[_m.level[3]] = {}
-            ra[_m.level[3]][_m.id] = [None for _ in range(number)]
+            available_count = 5 if number == 5 and int(_m.id) in remaster_ids else 4
+            ra[_m.level[3]][_m.id] = [None for _ in range(available_count)]
         for _d in playerdata:
             if number == 4 and _d.level_index == 4:
                 continue
-            ra[_d.table_level[3]][str(_d.song_id)][_d.level_index] = _d
+            slots = ra[_d.table_level[3]][str(_d.song_id)]
+            if _d.level_index < len(slots):
+                slots[_d.level_index] = _d
         
-        finished_bg = [Image.open(maimaidir / f't_{_}.png') for _ in range(4)]
+        finished_bg = [Image.open(maimaidir / f't_{_}.png') for _ in range(number)]
         unfinished_bg = Image.open(maimaidir / 'unfinished_2.png')
         complete_bg = Image.open(maimaidir / 'complete_2.png')
 
@@ -659,7 +663,7 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
                         hit_slots.append(n)
                         lv[n].add(play.song_id)
 
-                if len(hit_slots) == number:
+                if len(hit_slots) == len(result):
                     finished_songs.add(int(_id))
 
                 index = len(result) - 1

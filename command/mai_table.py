@@ -131,9 +131,6 @@ async def table_pfm_handler(event: AstrMessageEvent):
         plan = plate.group(2)
         if ver in platecn:
             ver = platecn[ver]
-        if ver in ['舞', '霸']:
-            yield event.plain_result('暂不支持查询「舞」系和「霸者」的牌子')
-            return
         if f'{ver}{plan}' == '真将':
             yield event.plain_result('真系没有真将哦')
             return
