@@ -15,6 +15,7 @@ from .maimaidx_music_rating import (
     MUSIC_INFO_RATING_X_POSITIONS,
     build_music_info_ratings,
 )
+from .maimaidx_music_notes import build_music_info_note_columns
 
 
 def newbestscore(song_id: str, lv: int, value: int, bestlist: List[ChartInfo]) -> int:
@@ -104,9 +105,7 @@ async def draw_music_info(
             f'{round(music.stats[num].fit_diff, 2):.2f}' if music.stats and music.stats[num] else '-', 
             default_color, 'mm'
         )
-        notes = list(music.charts[num].notes)
-        if len(notes) == 4:
-            notes.insert(3, '-')
+        notes = build_music_info_note_columns(music.charts[num].notes)
         for n, c in enumerate(notes):
             tb.draw(480 + 122 * n, 590 + spacing, 25, c, default_color, 'mm')
         charter = music.charts[num].charter
