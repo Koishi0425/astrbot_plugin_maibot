@@ -1,0 +1,788 @@
+"""Local OCR for cabinet photos, official result pages, and ADX results.
+
+The table-layout approach follows maimai-score-studio. Missing cells and
+non-unique BREAK solutions are kept explicit instead of filled with guesses.
+"""
+
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from pathlib import Path
+from statistics import median
+import re
+import unicodedata
+
+from .maimaidx_score import NOTE_TYPES, Judgements, ScoreAnalysis, analyse_judgements
+
+
+DIFFICULTIES = ("BASIC", "ADVANCED", "EXPERT", "MASTER", "Re:MASTER")
+HEADERS = ("CRITICAL", "PERFECT", "GREAT", "GOOD", "MISS")
+ROW_ALIASES = {
+    "TAP": ("TAP", "点击", "点击", "轻触"),
+    "HOLD": ("HOLD", "长按"),
+    "SLIDE": ("SLIDE", "滑动"),
+    "TOUCH": ("TOUCH", "触摸"),
+    "BREAK": ("BREAK", "绝赞"),
+}
+HEADER_ALIASES = (
+    ("CRITICAL", "CRIT", "CP", "绝妙"),
+    ("PERFECT", "PERF", "P", "完美"),
+    ("GREAT", "极好"),
+    ("GOOD", "良好"),
+    ("MISS", "失误", "错误"),
+)
+
+
+def plain(text: str) -> str:
+    """Normalize OCR labels without discarding Japanese characters.
+
+    Args:
+        text: OCR label or song title.
+
+    Returns:
+        Uppercase letters and numbers after Unicode normalization.
+    """
+    return "".join(
+        char for char in unicodedata.normalize("NFKC", text).upper() if char.isalnum()
+    )
+
+
+def integer(text: str) -> int | None:
+    """Read a nonnegative counter without coercing unrelated OCR text.
+
+    Args:
+        text: OCR token containing a counter.
+
+    Returns:
+        Counter, or None when the token is not a counter.
+    """
+    value = (
+        unicodedata.normalize("NFKC", text).strip().replace(",", "").replace("，", "")
+    )
+    value = value.replace("O", "0").replace("o", "0")
+    return int(value) if re.fullmatch(r"[0-9]{1,6}", value) else None
+
+
+@dataclass(frozen=True)
+class OCRToken:
+    text: str
+    score: float
+    left: float
+    top: float
+    right: float
+    bottom: float
+
+    @property
+    def x(self) -> float:
+        return (self.left + self.right) / 2
+
+    @property
+    def y(self) -> float:
+        return (self.top + self.bottom) / 2
+
+    @property
+    def area(self) -> float:
+        return (self.right - self.left) * (self.bottom - self.top)
+
+
+@dataclass
+class JudgementTable:
+    cells: dict[str, list[int | None]] = field(default_factory=dict)
+    merged: bool = False
+    centers: dict[tuple[str, int], tuple[float, float]] = field(default_factory=dict)
+    column_step: float = 0
+    row_step: float = 0
+
+
+@dataclass
+class RecognizedScore:
+    layout: str
+    achievement: str | None = None
+    dx_score: int | None = None
+    max_dx_score: int | None = None
+    music_id: str | None = None
+    title: str | None = None
+    difficulty: int | None = None
+    rows: dict[str, Judgements] = field(default_factory=dict)
+    aggregate: Judgements | None = None
+    analysis: ScoreAnalysis | None = None
+    warnings: list[str] = field(default_factory=list)
+
+    def format(self) -> str:
+        """Render observed data and verified BREAK solutions for a chat reply.
+
+        Returns:
+            Plain-text score report.
+        """
+        lines = ["mai识分"]
+        if self.music_id:
+            difficulty = (
+                DIFFICULTIES[self.difficulty]
+                if self.difficulty is not None
+                else "难度未知"
+            )
+            lines.append(f"{self.title} · {difficulty} · ID {self.music_id}")
+        else:
+            lines.append("歌曲 ID 未匹配")
+        if self.achievement:
+            lines.append(f"达成率：{self.achievement}%")
+        if self.dx_score is not None:
+            suffix = f" / {self.max_dx_score}" if self.max_dx_score is not None else ""
+            lines.append(f"DX 分：{self.dx_score}{suffix}")
+        if self.rows:
+            merged = any(row.critical is None for row in self.rows.values())
+            lines.append(
+                "判定（P / Great / Good / Miss）"
+                if merged
+                else "判定（CP / P / Great / Good / Miss）"
+            )
+            for name in NOTE_TYPES:
+                row = self.rows.get(name)
+                if row is None:
+                    lines.append(f"{name}：未完整识别")
+                    continue
+                values = [row.perfect, row.great, row.good, row.miss]
+                if not merged:
+                    values.insert(0, row.critical)
+                lines.append(f"{name}：" + " / ".join(str(value) for value in values))
+        if self.aggregate is not None:
+            row = self.aggregate
+            lines.append(
+                f"汇总 CP / P / Great / Good / Miss：{row.critical} / {row.perfect} / {row.great} / {row.good} / {row.miss}"
+            )
+            lines.append("简略结算缺少各键型判定，请发 Details 详细页以计算绝赞细分。")
+        analysis = self.analysis
+        if analysis and analysis.status in ("unique", "ambiguous"):
+            candidates = analysis.candidates
+            if analysis.status == "unique":
+                details = candidates[0]
+                lines.append(
+                    f"绝赞小 P：{details.perfect_50 + details.perfect_100}（50 落 {details.perfect_50}，100 落 {details.perfect_100}）"
+                )
+                lines.append(
+                    f"绝赞 Great：2000 档 {details.great_2000}，1500 档 {details.great_1500}，1250 档 {details.great_1250}"
+                )
+                lines.append("校验通过，绝赞细分唯一。")
+            else:
+                small_p_values = [
+                    candidate.perfect_50 + candidate.perfect_100
+                    for candidate in candidates
+                ]
+                lower, upper = min(small_p_values), max(small_p_values)
+                lines.append(
+                    f"绝赞小 P：{lower}"
+                    if lower == upper
+                    else f"绝赞小 P：{lower}～{upper}"
+                )
+                lines.append(f"校验通过，绝赞细分有 {len(candidates)} 组候选：")
+                for label, attribute in (
+                    ("50 落", "perfect_50"),
+                    ("100 落", "perfect_100"),
+                    ("Great 2000", "great_2000"),
+                    ("Great 1500", "great_1500"),
+                    ("Great 1250", "great_1250"),
+                ):
+                    values = [getattr(candidate, attribute) for candidate in candidates]
+                    lower, upper = min(values), max(values)
+                    lines.append(
+                        f"{label}：{lower}"
+                        if lower == upper
+                        else f"{label}：{lower}～{upper}"
+                    )
+        elif analysis:
+            lines.append(analysis.reason)
+        low_confidence = [
+            warning for warning in self.warnings if "识别置信度较低" in warning
+        ]
+        if low_confidence:
+            lines.append("提示：部分文字识别置信度较低，请核对判定与达成率。")
+        lines.extend(
+            f"提示：{warning}"
+            for warning in dict.fromkeys(self.warnings)
+            if warning not in low_confidence
+        )
+        return "\n".join(lines)
+
+
+def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
+    """Locate a four/five-column judgement table using label geometry.
+
+    Args:
+        tokens: OCR tokens in original image coordinates.
+        warnings: Recoveries or low-confidence observations to report.
+
+    Returns:
+        Row cells, column mode, and cell geometry. Unreadable cells remain None,
+        never an assumed zero.
+    """
+    anchors = {}
+    for name, aliases in ROW_ALIASES.items():
+        hits = [
+            token
+            for token in tokens
+            if any(plain(token.text).startswith(alias) for alias in aliases)
+        ]
+        if hits:
+            anchors[name] = max(hits, key=lambda token: token.score)
+    if len(anchors) < 3:
+        return JudgementTable()
+    ordered = sorted(anchors.items(), key=lambda pair: pair[1].y)
+    spacing = median(
+        right.y - left.y for (_, left), (_, right) in zip(ordered, ordered[1:])
+    )
+    if spacing <= 0:
+        return JudgementTable()
+    first_y = ordered[0][1].y
+    header_hits = {}
+    for column, aliases in enumerate(HEADER_ALIASES):
+        hits = [
+            token
+            for token in tokens
+            if first_y - 3 * spacing < token.y < first_y - spacing * 0.25
+            and any(plain(token.text).startswith(alias) for alias in aliases)
+        ]
+        if hits:
+            header_hits[column] = max(hits, key=lambda token: token.score).x
+    # CRITICAL PERFECT may be printed on two lines above the same column.
+    if (
+        0 in header_hits
+        and 1 in header_hits
+        and abs(header_hits[0] - header_hits[1]) < spacing
+    ):
+        hits = [
+            token
+            for token in tokens
+            if first_y - 3 * spacing < token.y < first_y - spacing * 0.25
+            and plain(token.text).startswith(("PERFECT", "PERF"))
+            and token.x > header_hits[0] + spacing
+        ]
+        if hits:
+            header_hits[1] = max(hits, key=lambda token: token.score).x
+        else:
+            header_hits.pop(1)
+    merged = 0 not in header_hits
+    columns = tuple(range(1 if merged else 0, 5))
+    slopes = [
+        (header_hits[b] - header_hits[a]) / (b - a)
+        for a in columns
+        for b in columns
+        if a < b and a in header_hits and b in header_hits
+    ]
+    if not slopes:
+        return JudgementTable()
+    step = median(slopes)
+    if step <= 0:
+        return JudgementTable()
+    origin = median(x - column * step for column, x in header_hits.items())
+    numbers = []
+    for token in tokens:
+        value = integer(token.text)
+        if value is not None:
+            numbers.append((token, value))
+        elif re.fullmatch(r"\s*[0-9]+(?:\s+[0-9]+){1,4}\s*", token.text):
+            # OCR sometimes merges adjacent numeric cells into one text box.
+            for match in re.finditer(r"[0-9]+", token.text):
+                width = (token.right - token.left) / len(token.text)
+                cell = OCRToken(
+                    match.group(),
+                    token.score,
+                    token.left + match.start() * width,
+                    token.top,
+                    token.left + match.end() * width,
+                    token.bottom,
+                )
+                numbers.append((cell, int(match.group())))
+    if merged:
+        critical_cells = [
+            token
+            for token, _ in numbers
+            if abs(token.x - origin) < step * 0.43
+            and any(
+                abs(token.y - anchor.y) < spacing * 0.43 for anchor in anchors.values()
+            )
+        ]
+        if len(critical_cells) >= 2:
+            merged = False
+            columns = tuple(range(5))
+            warnings.append("CRITICAL 表头未识别，根据五列表格位置恢复。")
+    # A missed label can be restored only if numeric cells occupy its predicted row.
+    if len(anchors) == 4:
+        positions = {NOTE_TYPES.index(name): token.y for name, token in anchors.items()}
+        slopes_y = [
+            (positions[b] - positions[a]) / (b - a)
+            for a in positions
+            for b in positions
+            if a < b
+        ]
+        row_step = median(slopes_y)
+        row_origin = median(y - index * row_step for index, y in positions.items())
+        missing = next(name for name in NOTE_TYPES if name not in anchors)
+        y = row_origin + NOTE_TYPES.index(missing) * row_step
+        nearby = [
+            token
+            for token, _ in numbers
+            if abs(token.y - y) < row_step * 0.4
+            and token.x > origin + (columns[0] - 0.5) * step
+        ]
+        if len(nearby) >= len(columns) - 1 and all(
+            abs(token.y - y) > row_step * 0.5 for token in anchors.values()
+        ):
+            anchors[missing] = OCRToken(missing, 1, 0, y - 1, 0, y + 1)
+            warnings.append(f"{missing} 标签未识别，根据表格行位置恢复。")
+    result = JudgementTable(merged=merged, column_step=step, row_step=spacing)
+    for name, anchor in anchors.items():
+        cells = [None] * 5
+        for column in columns:
+            x = header_hits.get(column, origin + column * step)
+            result.centers[name, column] = (x, anchor.y)
+            hits = [
+                (token, value)
+                for token, value in numbers
+                if abs(token.y - anchor.y) < spacing * 0.43
+                and abs(token.x - x) < step * 0.43
+            ]
+            if hits:
+                token, value = min(
+                    hits,
+                    key=lambda pair: abs(pair[0].x - x) + abs(pair[0].y - anchor.y),
+                )
+                cells[column] = value
+                if token.score < 0.8:
+                    warnings.append(
+                        f"{name} {HEADERS[column]} 识别置信度较低，请核对。"
+                    )
+        result.cells[name] = cells
+    return result
+
+
+def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
+    """Extract result fields, match chart IDs, and validate exact DX scoring.
+
+    Args:
+        tokens: OCR text and bounding boxes.
+        musics: Public maibot Music models with titles and chart note counts.
+
+    Returns:
+        Observed fields, warnings, and optional BREAK reconstruction.
+    """
+    labels = {plain(token.text) for token in tokens}
+    summary = any(label in ("GRADING", "FLUCTUATION") for label in labels)
+    adx = (
+        summary
+        or len(labels.intersection({"JUDGEMENT", "MAXCOMBO", "OFFSET", "CLEARS"})) >= 2
+        or {"CRIT", "PERF"}.issubset(labels)
+    )
+    result = RecognizedScore(
+        "adx_summary" if summary else "adx_details" if adx else "details"
+    )
+    percentages = []
+    for token in tokens:
+        for match in re.finditer(
+            r"(?<![\d.])([0-9]{1,3}\.[0-9]{1,8})\s*[%％]",
+            unicodedata.normalize("NFKC", token.text),
+        ):
+            value = match.group(1)
+            if float(value) <= 101:
+                percentages.append((token.area, float(value), value, token.score))
+    if percentages:
+        _, _, result.achievement, confidence = max(percentages)
+        if confidence < 0.8:
+            result.warnings.append("达成率识别置信度较低，请核对。")
+    difficulty_hits = []
+    for token in tokens:
+        text = plain(token.text)
+        for index, difficulty in reversed(tuple(enumerate(DIFFICULTIES))):
+            if plain(difficulty) in text:
+                difficulty_hits.append((token.score, index))
+                break
+    if difficulty_hits:
+        result.difficulty = max(difficulty_hits)[1]
+    dx_labels = [
+        token
+        for token in tokens
+        if plain(token.text).startswith(("DXSCORE", "DX分数", "DX分"))
+    ]
+    fractions = []
+    for token in tokens:
+        text = token.text.replace(",", "").replace("，", "")
+        match = re.search(r"(?<!\d)([0-9]{1,6})\s*/\s*([0-9]{1,6})(?!\d)", text)
+        if match:
+            actual, maximum = map(int, match.groups())
+            if actual <= maximum and maximum >= 30 and maximum % 3 == 0:
+                distance = min(
+                    (
+                        abs(token.y - label.y) + abs(token.x - label.x)
+                        for label in dx_labels
+                    ),
+                    default=1e9,
+                )
+                fractions.append((distance, -token.area, actual, maximum))
+    if fractions and dx_labels:
+        _, _, result.dx_score, result.max_dx_score = min(fractions)
+    elif dx_labels:
+        label = max(dx_labels, key=lambda token: token.score)
+        hits = [
+            token
+            for token in tokens
+            if integer(token.text) is not None
+            and abs(token.x - label.x) < max(80, label.right - label.left)
+            and 0 < token.y - label.y < max(80, (label.bottom - label.top) * 4)
+        ]
+        if hits:
+            result.dx_score = integer(
+                min(hits, key=lambda token: token.y - label.y).text
+            )
+    observed_table = (
+        JudgementTable() if summary else parse_table(tokens, result.warnings)
+    )
+    table, merged = observed_table.cells, observed_table.merged
+    if summary:
+        values = []
+        for aliases in HEADER_ALIASES:
+            hits = [token for token in tokens if plain(token.text) in aliases]
+            anchor = max(hits, key=lambda token: token.score) if hits else None
+            counts = [
+                token
+                for token in tokens
+                if anchor
+                and integer(token.text) is not None
+                and token.left > anchor.right
+                and abs(token.y - anchor.y) < (anchor.bottom - anchor.top) * 0.7
+            ]
+            values.append(
+                integer(min(counts, key=lambda token: token.x).text) if counts else None
+            )
+        if all(value is not None for value in values):
+            result.aggregate = Judgements(*values)
+    excluded_labels = set(
+        HEADERS
+        + DIFFICULTIES
+        + NOTE_TYPES
+        + (
+            "JUDGEMENT",
+            "FAST",
+            "LATE",
+            "GRADING",
+            "FLUCTUATION",
+            "DXSCORE",
+            "MAXCOMBO",
+            "CLEARS",
+            "OFFSET",
+            "DETAILS",
+            "BRIEF",
+            "NOMODS",
+            "ACHIEVEMENT",
+        )
+    )
+    title_texts = [
+        plain(re.sub(r"\[(DX|SD)\]\s*$", "", token.text, flags=re.I))
+        for token in tokens
+        if len(plain(token.text)) >= 3 and plain(token.text) not in excluded_labels
+    ]
+    complete = {
+        name: sum(value for value in cells if value is not None)
+        for name, cells in table.items()
+        if all(value is not None for value in cells[1 if merged else 0 :])
+    }
+    charts = []
+    for music in musics:
+        if int(music.id) >= 100000:
+            continue
+        title = plain(music.title)
+        similarity = max(
+            (SequenceMatcher(None, title, text).ratio() for text in title_texts),
+            default=0,
+        )
+        for index, chart in enumerate(music.charts):
+            if result.difficulty is not None and index != result.difficulty:
+                continue
+            notes = tuple(chart.notes)
+            if len(notes) == 4:
+                notes = (*notes[:3], 0, notes[3])
+            matching = all(
+                complete[name] == notes[NOTE_TYPES.index(name)] for name in complete
+            )
+            charts.append((similarity, matching, music, index, notes))
+    exact = [chart for chart in charts if chart[0] == 1]
+    by_notes = [chart for chart in charts if len(complete) >= 4 and chart[1]]
+    candidates = exact or by_notes or [chart for chart in charts if chart[0] >= 0.78]
+    if candidates:
+        matching = [chart for chart in candidates if chart[1]]
+        if matching:
+            candidates = matching
+        best = max(chart[0] for chart in candidates)
+        candidates = [chart for chart in candidates if chart[0] == best]
+        if len(candidates) == 1:
+            _, _, music, index, expected_notes = candidates[0]
+            result.music_id, result.title, result.difficulty = (
+                str(music.id),
+                music.title,
+                index,
+            )
+        else:
+            expected_notes = None
+            result.warnings.append("歌曲或难度匹配存在多个候选，未指定歌曲 ID。")
+    else:
+        expected_notes = None
+    for name in NOTE_TYPES:
+        cells = table.get(name)
+        if cells is None:
+            if summary:
+                continue
+            if (
+                expected_notes is not None
+                and expected_notes[NOTE_TYPES.index(name)] == 0
+            ):
+                result.rows[name] = Judgements(None if merged else 0, 0, 0, 0, 0)
+            continue
+        required = range(1 if merged else 0, 5)
+        missing = [index for index in required if cells[index] is None]
+        if len(missing) == 1 and expected_notes is not None:
+            recovered = expected_notes[NOTE_TYPES.index(name)] - sum(
+                value for value in cells if value is not None
+            )
+            if recovered >= 0:
+                cells[missing[0]] = recovered
+                result.warnings.append(
+                    f"{name} {HEADERS[missing[0]]} 未识别，由谱面物量与其余判定恢复为 {recovered}。"
+                )
+        if all(cells[index] is not None for index in required):
+            result.rows[name] = Judgements(*cells)
+    if not summary:
+        result.analysis = analyse_judgements(
+            result.rows,
+            result.achievement,
+            result.dx_score,
+            expected_notes,
+            result.max_dx_score,
+            rounded=adx,
+        )
+    elif result.aggregate:
+        total = result.aggregate
+        calculated_dx = 3 * total.critical + 2 * total.perfect + total.great
+        if result.dx_score is not None and calculated_dx != result.dx_score:
+            result.warnings.append("DX 分与汇总判定不一致，请核对。")
+        if expected_notes and sum(expected_notes) != total.total:
+            result.warnings.append("汇总判定数量与谱面物量不一致，请核对。")
+    return result
+
+
+class ScoreRecognizer:
+    """Lazily initialized local CPU OCR; callers serialize access in a worker thread."""
+
+    def __init__(self, model_dir: Path):
+        self.model_dir = model_dir
+        self.engine = None
+
+    def recognize(self, path: Path, musics: list) -> RecognizedScore:
+        """Read one local result image and calculate its score report.
+
+        Args:
+            path: Downloaded message image.
+            musics: Public song catalog already loaded by maibot.
+
+        Returns:
+            Recognized score with validation and BREAK detail.
+
+        Raises:
+            ImportError: If OCR runtime dependencies have not been installed.
+            ValueError: If the image is empty or too large.
+            OSError: If the image or OCR models cannot be read.
+        """
+        from PIL import Image, ImageOps
+        import numpy as np
+        from rapidocr import RapidOCR
+
+        if path.stat().st_size > 20 * 1024 * 1024:
+            raise ValueError("图片超过 20 MB，请压缩后重试。")
+        with Image.open(path) as image:
+            if image.width * image.height > 25_000_000:
+                raise ValueError("图片分辨率过大，请缩小后重试。")
+            source = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))[
+                :, :, ::-1
+            ].copy()
+        if self.engine is None:
+            self.model_dir.mkdir(parents=True, exist_ok=True)
+            self.engine = RapidOCR(
+                params={
+                    "Global.model_root_dir": str(self.model_dir),
+                    "Global.log_level": "error",
+                }
+            )
+        output = self.engine(source, use_det=True, use_cls=True, use_rec=True)
+        if output.boxes is None or output.txts is None or output.scores is None:
+            raise ValueError("未识别到文字，请发送清晰的完整结算图片。")
+        tokens = []
+        for box, text, score in zip(output.boxes, output.txts, output.scores):
+            tokens.append(
+                OCRToken(
+                    str(text),
+                    float(score),
+                    float(box[:, 0].min()),
+                    float(box[:, 1].min()),
+                    float(box[:, 0].max()),
+                    float(box[:, 1].max()),
+                )
+            )
+        anchors = [
+            token
+            for token in tokens
+            if any(
+                plain(token.text).startswith(alias)
+                for aliases in ROW_ALIASES.values()
+                for alias in aliases
+            )
+        ]
+        summary = any(plain(token.text) == "GRADING" for token in tokens)
+        if summary:
+            anchors = [
+                token
+                for token in tokens
+                if plain(token.text) in ("CRITICAL", "PERFECT", "GREAT", "GOOD", "MISS")
+            ]
+        if len(anchors) >= 3:
+            # Enlarge the judgement region so tiny zeroes and dark ADX cells
+            # remain readable when the rest of a photo is much larger.
+            import cv2
+
+            spacing = median(
+                right.y - left.y
+                for left, right in zip(
+                    sorted(anchors, key=lambda token: token.y),
+                    sorted(anchors, key=lambda token: token.y)[1:],
+                )
+            )
+            left = max(0, int(min(token.left for token in anchors) - spacing))
+            top = max(0, int(min(token.top for token in anchors) - 2 * spacing))
+            bottom = min(
+                source.shape[0],
+                int(max(token.bottom for token in anchors) + spacing * 0.6),
+            )
+            # Keep all columns, including MISS; row labels anchor the left edge.
+            right = source.shape[1]
+            crop = source[top:bottom, left:right]
+            scale = min(3.0, 1800 / crop.shape[1])
+            enlarged = cv2.resize(
+                crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+            )
+            table_output = self.engine(
+                enlarged, use_det=True, use_cls=True, use_rec=True
+            )
+            if (
+                table_output.boxes is not None
+                and table_output.txts is not None
+                and table_output.scores is not None
+            ):
+                previous_tokens = tokens.copy()
+                new_tokens = []
+                for box, text, score in zip(
+                    table_output.boxes, table_output.txts, table_output.scores
+                ):
+                    new_tokens.append(
+                        OCRToken(
+                            str(text),
+                            float(score),
+                            float(box[:, 0].min()) / scale + left,
+                            float(box[:, 1].min()) / scale + top,
+                            float(box[:, 0].max()) / scale + left,
+                            float(box[:, 1].max()) / scale + top,
+                        )
+                    )
+                # Keep first-pass cells when enlarging the table misses them.
+                tokens = new_tokens + [
+                    token
+                    for token in previous_tokens
+                    if not any(
+                        abs(token.x - new.x) < max(8, (token.right - token.left) * 0.4)
+                        and abs(token.y - new.y)
+                        < max(5, (token.bottom - token.top) * 0.4)
+                        for new in new_tokens
+                    )
+                ]
+        if summary:
+            anchors = [
+                token
+                for token in tokens
+                if plain(token.text) in ("CRITICAL", "PERFECT", "GREAT", "GOOD", "MISS")
+            ]
+            ordered = sorted(anchors, key=lambda token: token.y)
+            if len(ordered) == 5:
+                spacing = median(b.y - a.y for a, b in zip(ordered, ordered[1:]))
+                reference = [
+                    token
+                    for token in tokens
+                    if integer(token.text) is not None
+                    and token.left > ordered[0].right
+                    and abs(token.y - ordered[0].y) < spacing * 0.4
+                ]
+                if reference:
+                    x = min(reference, key=lambda token: token.x).x
+                    for anchor in ordered:
+                        # Read one counter per row; vertically merged "1 3"
+                        # must not become thirteen in both GOOD and MISS rows.
+                        left, right = (
+                            max(0, int(x - spacing * 1.2)),
+                            min(source.shape[1], int(x + spacing * 1.2)),
+                        )
+                        top, bottom = (
+                            max(0, int(anchor.y - spacing * 0.4)),
+                            min(source.shape[0], int(anchor.y + spacing * 0.4)),
+                        )
+                        cell_output = self.engine(
+                            source[top:bottom, left:right],
+                            use_det=False,
+                            use_cls=False,
+                            use_rec=True,
+                        )
+                        if (
+                            cell_output.txts
+                            and integer(cell_output.txts[0]) is not None
+                        ):
+                            tokens = [
+                                token
+                                for token in tokens
+                                if not (
+                                    left <= token.x <= right
+                                    and top <= token.y <= bottom
+                                )
+                            ]
+                            tokens.append(
+                                OCRToken(
+                                    str(cell_output.txts[0]),
+                                    float(cell_output.scores[0]),
+                                    left,
+                                    top,
+                                    right,
+                                    bottom,
+                                )
+                            )
+        else:
+            table = parse_table(tokens, [])
+            for (name, column), (x, y) in table.centers.items():
+                if table.cells[name][column] is not None:
+                    continue
+                left, right = (
+                    max(0, int(x - table.column_step * 0.42)),
+                    min(source.shape[1], int(x + table.column_step * 0.48)),
+                )
+                top, bottom = (
+                    max(0, int(y - table.row_step * 0.38)),
+                    min(source.shape[0], int(y + table.row_step * 0.38)),
+                )
+                cell_output = self.engine(
+                    source[top:bottom, left:right],
+                    use_det=False,
+                    use_cls=False,
+                    use_rec=True,
+                )
+                if cell_output.txts and integer(cell_output.txts[0]) is not None:
+                    tokens.append(
+                        OCRToken(
+                            str(cell_output.txts[0]),
+                            float(cell_output.scores[0]),
+                            left,
+                            top,
+                            right,
+                            bottom,
+                        )
+                    )
+        return parse_ocr_tokens(tokens, musics)

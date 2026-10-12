@@ -49,7 +49,7 @@ async def run_chrome_to_base64() -> str:
     async with async_playwright() as p:
         browers = await p.chromium.launch(headless=True)
         page = await browers.new_page(java_script_enabled=True)
-        await page.goto('file://' + str(pie_html_file))
+        await page.goto(pie_html_file.resolve().as_uri())
         await asyncio.sleep(2)
         
         content: str = await page.evaluate(SNAPSHOT_JS)

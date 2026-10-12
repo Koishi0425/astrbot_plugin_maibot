@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Iterable
 
 import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent
 
 from .. import (
-    MessageSegment, SONGS_PER_PAGE, all_version_names, category, combo_rank,
+    MessageSegment, SONGS_PER_PAGE, category, combo_rank,
     diffs, is_reply_enabled, plate_to_dx_version, platecn, scoreRank, static,
 )
 from ..libraries.image import image_to_base64, text_to_image
-from ..libraries.maimai_best_50 import computeRa
 from ..libraries.maimaidx_advanced import (
-    chart_distribution, course_catalog, field, is_ap, load_sdgb_cache,
+    chart_distribution, course_catalog, field, is_ap,
     record_level_index, record_song_id, sorted_records,
 )
 from ..libraries.maimaidx_api_data import maiApi
@@ -51,28 +49,22 @@ async def _identity(event: AstrMessageEvent, target: str = "") -> tuple[str | No
 
 
 async def _records(qqid: str | None, username: str | None) -> list[Any]:
-    if maiApi.token:
-        obj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        return list(obj.records or [])
-    records = await maiApi.query_user_plate(qqid=qqid, username=username, version=all_version_names)
-    for record in records:
-        music = mai.total_list.by_id(record.song_id)
-        if music and record.level_index < len(music.ds):
-            record.ds = music.ds[record.level_index]
-            record.ra, record.rate = computeRa(record.ds, record.achievements, israte=True)
-    return records
+    obj = await maiApi.query_user_records(qqid=qqid, username=username)
+    return list(obj.records or [])
 
 
-def _record_line(index: int, record: Any, *, play_count: bool = False) -> str:
+def _record_line(index: int, record: Any) -> str:
     song_id = record_song_id(record)
     level_index = record_level_index(record)
     music = mai.total_list.by_id(song_id)
     title = music.title if music else str(field(record, "title", f"ID {song_id}"))
-    ds = music.ds[level_index] if music and level_index < len(music.ds) else field(record, "ds", "-")
-    achievement = float(field(record, "achievements", field(record, "achievement", 0)) or 0)
-    if achievement > 1000:  # sdgb stores 10000 == 1%
-        achievement /= 10000
-    suffix = f" PC {int(field(record, 'playCount', 0) or 0)}" if play_count else f" RA {int(field(record, 'ra', 0) or 0)}"
+    ds = (
+        music.ds[level_index]
+        if music and level_index < len(music.ds)
+        else field(record, "ds", "-")
+    )
+    achievement = float(field(record, "achievements", 0) or 0)
+    suffix = f" RA {int(field(record, 'ra', 0) or 0)}"
     return f"{index:02d}. [{song_id}] {diffs[level_index]} {ds} {achievement:.4f}%{suffix}  {title}"
 
 
@@ -319,29 +311,4 @@ async def dan_table_handler(event: AstrMessageEvent):
     for index, (title, chart_type, level, combo) in enumerate(courses[query], 1):
         lines.append(f"Track {index}: [{chart_type}] Lv.{level}  {title}  COMBO {combo}")
     lines.append(catalog.get("notes", ""))
-    yield event.chain_result(_chain(event, _message("\n".join(lines))))
-
-
-async def pc50_handler(event: AstrMessageEvent):
-    identity = await resolve_sender_qq(event)
-    cache_key = (
-        str(identity.qqid)
-        if not identity.error and identity.qqid
-        else str(event.get_sender_id())
-    )
-    cache = load_sdgb_cache(static / "sdgb_music_cache.json", cache_key)
-    if not cache:
-        yield event.plain_result("没有 sdgb 成绩缓存，请先执行“更新记录”。")
-        return
-    selected = sorted_records(
-        cache.get("records", []), limit=50,
-        key=lambda record: (int(field(record, "playCount", 0) or 0), int(field(record, "achievement", 0) or 0)),
-    )
-    source = (
-        "SDGB Tech"
-        if cache.get("source") == "sdgbtech"
-        else Path(cache.get("dumpDir", "")).name
-    )
-    lines = [f"PC50（按谱面游玩次数排序）  数据：{source}"]
-    lines.extend(_record_line(index, record, play_count=True) for index, record in enumerate(selected, 1))
     yield event.chain_result(_chain(event, _message("\n".join(lines))))

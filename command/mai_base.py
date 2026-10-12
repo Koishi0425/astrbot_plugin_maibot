@@ -107,11 +107,12 @@ async def maimaidxhelp_handler(event: AstrMessageEvent):
     help_image_path = Root / 'maimaidxhelp.png'
     if help_image_path.exists():
         chain = [
-            Comp.Image.fromFileSystem(str(help_image_path))
+            Comp.Image.fromFileSystem(str(help_image_path)),
+            Comp.Plain('补充命令：mai识分（带图或回复图片）；mai授权（新用户或授权失效时使用）。')
         ]
         yield event.chain_result(chain)
     else:
-        yield event.plain_result('帮助图片未找到')
+        yield event.plain_result('帮助图片未找到。\nmai识分：带图或回复图片识分。\nmai授权：新用户或授权失效时授权水鱼成绩读取。')
 
 async def mai_today_handler(event: AstrMessageEvent):
     """今日mai/今日舞萌/今日运势"""

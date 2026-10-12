@@ -255,13 +255,7 @@ async def _query_song_record(
     record = None
     async with semaphore:
         try:
-            if maiApi.token:
-                records = await maiApi.query_user_post_dev(qqid=qq, music_id=music.id)
-            else:
-                records = await maiApi.query_user_plate(
-                    qqid=qq,
-                    version=[music.basic_info.version],
-                )
+            records = await maiApi.query_user_record(qqid=qq, music_id=music.id)
             record = next(
                 (
                     item for item in records
@@ -270,7 +264,8 @@ async def _query_song_record(
                 None,
             )
         except Exception as exc:
-            log.warning(f"单曲群排行查询用户 {qq} 的歌曲 {music.id} 失败: {exc}")
+            log.warning(f"Group song query failed for song {music.id}: {exc}")
+            return None
     _SONG_RECORD_CACHE[cache_key] = (now, record)
     return record
 
@@ -299,7 +294,7 @@ async def get_group_song_rank_page(event, music: Music, level_index: int, page: 
     results = await asyncio.gather(*(query_one(key, data) for key, data in members.items()))
     entries = [entry for entry in results if entry is not None]
     if not entries:
-        return None, f"本群榜单成员还没有《{music.title}》{diffs[level_index]}谱面的成绩"
+        return None, f"未查询到本群成员的《{music.title}》{diffs[level_index]}成绩。未授权的成员请先发送 mai授权。"
 
     entries.sort(
         key=lambda item: (

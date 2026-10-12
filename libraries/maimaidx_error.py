@@ -1,5 +1,7 @@
 from textwrap import dedent
 
+from .maimaidx_oauth import OAuthError  # noqa: F401
+
 
 class UserNotFoundError(Exception):
     
@@ -21,24 +23,6 @@ class UserDisabledQueryError(Exception):
 
     def __str__(self) -> str:
         return '该用户禁止了其他人获取数据或未同意用户协议。'
-
-
-class TokenError(Exception):
-
-    def __str__(self) -> str:
-        return '开发者Token有误'
-
-
-class TokenDisableError(Exception):
-
-    def __str__(self) -> str:
-        return '开发者Token被禁用'
-
-
-class TokenNotFoundError(Exception):
-
-    def __str__(self) -> str:
-        return '请先联系水鱼申请开发者token'
 
 
 class MusicNotPlayError(Exception):

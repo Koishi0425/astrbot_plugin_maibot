@@ -1,5 +1,3 @@
-import copy
-
 from .. import (
     MessageSegment,
     all_version_names,
@@ -9,6 +7,7 @@ from .. import (
     themepicdir,
 )
 from .maimai_best_50 import *
+from .maimaidx_oauth import OAuthError
 from .maimaidx_resource import format_missing_resource_error
 from .maimaidx_music import Music, mai
 from .maimaidx_music_rating import (
@@ -148,30 +147,16 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
     """
     try:
         diff: List[Union[None, PlayInfoDev, PlayInfoDefault]]
-        if maiApi.token:
-            data = await maiApi.query_user_post_dev(qqid=qqid, username=username, music_id=music_id)
-            if not data:
-                raise MusicNotPlayError
+        data = await maiApi.query_user_record(
+            qqid=qqid, username=username, music_id=music_id
+        )
+        if not data:
+            raise MusicNotPlayError
 
-            music = mai.total_list.by_id(music_id)
-            diff = [None for _ in music.ds]
-            for _d in data:
-                diff[_d.level_index] = _d
-            dev = True
-        else:
-            version = all_version_names
-            data = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
-
-            music = mai.total_list.by_id(music_id)
-            _temp = [None for _ in music.ds]
-            diff = copy.deepcopy(_temp)
-
-            for _d in data:
-                if _d.song_id == int(music_id):
-                    diff[_d.level_index] = _d
-            if diff == _temp:
-                raise MusicNotPlayError
-            dev = False
+        music = mai.total_list.by_id(music_id)
+        diff = [None for _ in music.ds]
+        for _d in data:
+            diff[_d.level_index] = _d
 
         im = Image.open(themepicdir / 'play_info.png').convert('RGBA')
     
@@ -203,19 +188,16 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
             im.alpha_composite(Image.open(maimaidir / f'd_{num}.png'), (650, 235 + y * num))
             if info:
                 im.alpha_composite(Image.open(themepicdir / 'ra_dx.png').resize((102, 44)), (850, 272 + y * num))
-                if dev:
-                    dxscore = info.dxScore
-                    _dxscore = sum(music.charts[num].notes) * 3
-                    dxnum = dxScore(dxscore / _dxscore * 100)
-                    rating, rate = info.ra, score_Rank_l[info.rate]
-                    if dxnum != 0:
-                        im.alpha_composite(
-                            Image.open(maimaidir / f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png').resize((32, 19)), 
-                            (851, 296 + y * num)
-                        )
-                    tb.draw(916, 304 + y * num, 13, f'{dxscore}/{_dxscore}', color, 'mm')
-                else:
-                    rating, rate = computeRa(music.ds[num], info.achievements, israte=True)
+                dxscore = info.dxScore
+                _dxscore = sum(music.charts[num].notes) * 3
+                dxnum = dxScore(dxscore / _dxscore * 100)
+                rating, rate = info.ra, score_Rank_l[info.rate]
+                if dxnum != 0:
+                    im.alpha_composite(
+                        Image.open(maimaidir / f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png').resize((32, 19)),
+                        (851, 296 + y * num)
+                    )
+                tb.draw(916, 304 + y * num, 13, f'{dxscore}/{_dxscore}', color, 'mm')
                     
                 im.alpha_composite(Image.open(maimaidir / 'fcfs.png'), (965, 265 + y * num))
                 if info.fc:
@@ -250,9 +232,7 @@ async def draw_music_play_data(qqid: int = None, music_id: str = None, username:
         UserNotExistsError,
         UserDisabledQueryError,
         MusicNotPlayError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:
@@ -416,9 +396,7 @@ async def _draw_rating_table_legacy(qqid: int = None, rating: str = None, isfc: 
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:
@@ -543,9 +521,7 @@ async def draw_rating_table(qqid: int = None, rating: str = None, isfc: bool = F
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:
@@ -719,9 +695,7 @@ async def draw_plate_table(qqid: int = None, version: str = None, plan: str = No
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:

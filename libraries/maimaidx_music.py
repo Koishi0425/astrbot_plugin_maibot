@@ -225,15 +225,15 @@ class AliasList(List[Alias]):
 
 dataerror = dedent(f'''
     未找到文件，请自行使用浏览器访问 "https://www.diving-fish.com/api/maimaidxprober/music_data" 
-    将内容保存为 "music_data.json" 存放在 "static" 目录下并重启bot
+    将内容保存到 "{music_file}" 并重启bot
 ''').strip()
 charterror = dedent(f'''
     未找到文件，请自行使用浏览器访问 "https://www.diving-fish.com/api/maimaidxprober/chart_stats"
-    将内容保存为 "music_chart.json" 存放在 "static" 目录下并重启bot
+    将内容保存到 "{chart_file}" 并重启bot
 ''').strip()
-aliaserror = dedent('''
-    本地暂存别名文件为空，请自行使用浏览器访问 "https://www.yuzuchan.moe/api/maimaidx/maimaidxalias" 
-    获取别名数据并保存在 "static/music_alias.json" 文件中并重启bot
+aliaserror = dedent(f'''
+    本地暂存别名文件为空，请自行使用浏览器访问 "https://www.yuzuchan.moe/api/v2/aliases/maimaidx/aliases"
+    获取别名数据并保存在 "{alias_file}" 文件中并重启bot
 ''').strip()
 
 
@@ -308,6 +308,7 @@ async def get_music_alias_list() -> AliasList:
     for _a in filter(lambda x: mai.total_list.by_id(x['SongID']), alias_data):
         if (song_id := str(_a['SongID'])) in local_alias_data:
             _a['Alias'].extend(local_alias_data[song_id])
+        _a['Alias'] = list(dict.fromkeys(_a['Alias']))
         total_alias_list.append(Alias.model_validate(_a))
 
     return total_alias_list

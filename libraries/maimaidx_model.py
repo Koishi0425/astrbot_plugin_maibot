@@ -1,7 +1,7 @@
 from collections import namedtuple
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 ##### Music
@@ -62,58 +62,32 @@ class RaMusic(BaseModel):
 
 
 ##### API
-class APIResult(BaseModel):
-    
-    code: int = 0
-    content: Union[dict, list, str]
-
-
 ##### Aliases
 class Alias(BaseModel):
-    
-    SongID: int
-    Name: str
-    Alias: List[str]
+    SongID: int = Field(validation_alias=AliasChoices("song_id", "SongID"))
+    Name: str = Field(validation_alias=AliasChoices("name", "Name"))
+    Alias: List[str] = Field(validation_alias=AliasChoices("alias", "Alias"))
 
 
-class StatusBase(BaseModel):
-    
-    SongID: int
-    ApplyUID: int
-    ApplyAlias: str
-
-
-class Approved(StatusBase):
-    
-    Tag: str
-    Name: str
-    GroupID: Optional[int] = None
-    WSUUID: Optional[str] = None
-
-
-class AliasStatus(StatusBase):
-    
-    Tag: str
-    Name: str
-    Time: str
-    AgreeVotes: Optional[int] = 0
-    Votes: int
-
-class Reviewed(StatusBase):
-
-    Tag: str
-    Name: str
+class AliasStatus(BaseModel):
+    SongID: int = Field(validation_alias=AliasChoices("song_id", "SongID"))
+    ApplyAlias: str = Field(validation_alias=AliasChoices("apply_alias", "ApplyAlias"))
+    Tag: str = Field(validation_alias=AliasChoices("tag", "Tag"))
+    Name: str = Field(validation_alias=AliasChoices("name", "Name"))
+    Time: str = Field(validation_alias=AliasChoices("created_at", "Time"))
+    AgreeVotes: Optional[int] = Field(
+        default=0, validation_alias=AliasChoices("agree_votes", "AgreeVotes")
+    )
+    Votes: int = Field(validation_alias=AliasChoices("votes", "Votes"))
 
 
 class PushAliasStatus(BaseModel):
-    
-    Type: str
-    Status: Union[AliasStatus, Approved, Reviewed]
+    Type: str = Field(validation_alias=AliasChoices("type", "Type"))
+    Status: List[AliasStatus] = Field(validation_alias=AliasChoices("status", "Status"))
 
 
 ##### Guess
 class GuessData(BaseModel):
-    
     music: Music
     img: str
     answer: List[str]
@@ -121,7 +95,6 @@ class GuessData(BaseModel):
 
 
 class GuessDefaultData(GuessData):
-    
     options: List[str]
 
 

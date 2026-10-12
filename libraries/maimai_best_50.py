@@ -315,24 +315,24 @@ class DrawBest(ScoreBaseImage):
         return self._im
 
 
-def dxScore(dx: int) -> int:
-    """
-    获取DX评分星星数量
-    
-    Params:
-        `dx`: dx百分比
+def dxScore(dx: float) -> int:
+    """Return DX stars including exact percentage thresholds.
+
+    Args:
+        dx: DX score as a percentage of the chart's maximum score.
+
     Returns:
-        `int` 返回星星数量
+        Star count from zero to five.
     """
-    if dx <= 85:
+    if dx < 85:
         result = 0
-    elif dx <= 90:
+    elif dx < 90:
         result = 1
-    elif dx <= 93:
+    elif dx < 93:
         result = 2
-    elif dx <= 95:
+    elif dx < 95:
         result = 3
-    elif dx <= 97:
+    elif dx < 97:
         result = 4
     else:
         result = 5

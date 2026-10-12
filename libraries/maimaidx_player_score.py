@@ -2,7 +2,7 @@ import random
 import time
 import traceback
 from collections import defaultdict
-from typing import Callable, DefaultDict
+from typing import Callable, DefaultDict, Dict, List, Optional, Tuple, Union
 
 import pyecharts.options as opts
 from pyecharts.charts import Pie
@@ -10,8 +10,10 @@ from pyecharts.charts import Pie
 from .. import *
 from .image import *
 from .maimai_best_50 import ScoreBaseImage, changeColumnWidth, coloumWidth, computeRa
-from .maimaidx_api_data import *
-from .maimaidx_model import PlanInfo, PlayInfoDefault, PlayInfoDev, RaMusic
+from .maimaidx_api_data import maiApi
+from .maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
+from .maimaidx_oauth import OAuthError
+from .maimaidx_model import ChartInfo, PlanInfo, PlayInfoDefault, PlayInfoDev, RaMusic, RiseScore
 from .maimaidx_music import Music, mai
 from .maimaidx_resource import format_missing_resource_error
 from .tool import run_chrome_to_base64
@@ -44,35 +46,38 @@ async def music_global_data(music: Music, level_index: int) -> MessageSegment:
     fc_data_pair = [list(z) for z in zip([c.upper() if c else 'Not FC' for c in [''] + comboRank], stats.fc_dist)]
     acc_data_pair = [list(z) for z in zip([s.upper() for s in scoreRank], stats.dist)]
 
-    initopts = opts.InitOpts(width='1000px', height='800px', bg_color='#fff', js_host='./')
+    initopts = opts.InitOpts(
+        width='1000px', height='800px', bg_color='#fff',
+        js_host=static.resolve().as_uri() + '/',
+    )
     labelopts = opts.LabelOpts(
-        position='outside',
-        formatter='{a|{a}}{abg|}\n{hr|}\n {b|{b}: }{c}  {per|{d}%}  ',
-        background_color='#eee',
-        border_color='#aaa',
+        position="outside",
+        formatter="{a|{a}}{abg|}\n{hr|}\n {b|{b}: }{c}  {per|{d}%}  ",
+        background_color="#eee",
+        border_color="#aaa",
         border_width=1,
         border_radius=4,
         rich={
-            'a': {'color': '#999', 'lineHeight': 22, 'align': 'center'},
-            'abg': {
-                'backgroundColor': '#e3e3e3',
-                'width': '100%',
-                'align': 'right',
-                'height': 22,
-                'borderRadius': [4, 4, 0, 0],
+            "a": {"color": "#999", "lineHeight": 22, "align": "center"},
+            "abg": {
+                "backgroundColor": "#e3e3e3",
+                "width": "100%",
+                "align": "right",
+                "height": 22,
+                "borderRadius": [4, 4, 0, 0],
             },
-            'hr': {
-                'borderColor': '#aaa',
-                'width': '100%',
-                'borderWidth': 0.5,
-                'height': 0,
+            "hr": {
+                "borderColor": "#aaa",
+                "width": "100%",
+                "borderWidth": 0.5,
+                "height": 0,
             },
-            'b': {'fontSize': 16, 'lineHeight': 33},
-            'per': {
-                'color': '#eee',
-                'backgroundColor': '#334455',
-                'padding': [2, 4],
-                'borderRadius': 2,
+            "b": {"fontSize": 16, "lineHeight": 33},
+            "per": {
+                "color": "#eee",
+                "backgroundColor": "#334455",
+                "padding": [2, 4],
+                "borderRadius": 2,
             },
         },
     )
@@ -438,9 +443,7 @@ async def rise_score_data(
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:
@@ -510,9 +513,7 @@ async def player_plate_data(
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         return str(e)
     
@@ -628,12 +629,8 @@ async def level_process_data(
         `Union[MessageSegment, str]`
     """
     try:
-        if maiApi.token:
-            devobj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-            obj = devobj.records
-        else:
-            version = all_version_names
-            obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
+        devobj = await maiApi.query_user_records(qqid=qqid, username=username)
+        obj = devobj.records
         music = mai.total_list.by_plan(level)
 
         planlist = [0, 0, 0]
@@ -744,9 +741,7 @@ async def level_process_data(
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:
@@ -778,17 +773,8 @@ async def level_achievement_list_data(
     """
     try:
         data: Union[List[PlayInfoDefault], List[PlayInfoDev]] = []
-        if maiApi.token:
-            obj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-            data = obj.records
-        else:
-            version = all_version_names
-            obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
-            for _d in obj:
-                music = mai.total_list.by_id(_d.song_id)
-                _d.ds = music.ds[_d.level_index]
-                _d.ra, _d.rate = computeRa(_d.ds, _d.achievements, israte=True)
-            data = obj
+        obj = await maiApi.query_user_records(qqid=qqid, username=username)
+        data = obj.records
 
         if isinstance(rating, str):
             newdata = sorted(list(filter(lambda x: x.level == rating, data)), key=lambda z: z.achievements, reverse=True)
@@ -822,9 +808,7 @@ async def level_achievement_list_data(
         UserNotFoundError,
         UserNotExistsError,
         UserDisabledQueryError,
-        TokenError,
-        TokenDisableError,
-        TokenNotFoundError,
+        OAuthError,
     ) as e:
         msg = str(e)
     except FileNotFoundError as e:

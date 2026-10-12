@@ -1,7 +1,7 @@
-# astrbot_plugin_maimaidx
+# astrbot_plugin_maibot
 
-[![python3](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![python3](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 基于 [AstrBot](https://astrbot.app) 框架的街机音游 **舞萌DX** 查分插件。
 
@@ -16,13 +16,26 @@
 - 机厅排卡
 - 别名管理、投票与推送
 - 查分器排行榜查询
+- `mai识分`：机台照片、公众号成绩详情和 ADX 结算截图识别，匹配歌曲 ID，校验判定并计算绝赞细分
+
+### 图片识分
+
+发送 `mai识分` 并附上一张图片，或回复图片消息发送 `mai识分`。
+
+详细结算需要保留歌曲名、难度、达成率和完整判定表。识别结果包含歌曲 ID、各键型判定、绝赞小 P 的 50 落与 100 落，以及 Great 的 2000 / 1500 / 1250 三档。程序校验谱面物量、DX 分和达成率：机台/公众号按显示精度截断，ADX 按显示精度四舍五入，计算全程使用精确分数。缺失数字只在谱面物量能确定该数字时恢复；存在多个合法解时显示候选范围。
+
+ADX 简略结算可以识别歌曲、达成率与汇总判定；计算绝赞细分请发送 `Details` 详细页。
+
+使用本地 RapidOCR，图片不上传到识别服务。首次使用会下载 OCR 模型到 AstrBot 的 `data/plugin_data/astrbot_plugin_maibot/ocr/`；后续使用缓存。表格识别方案参考 [maimai-score-studio](https://github.com/Koishi0425/maimai-score-studio)。
+
+舞萌 DX 的普通键型基础分为 TAP / HOLD / SLIDE / TOUCH = 500 / 1000 / 1500 / 500，Great 为 80%、Good 为 50%。绝赞基础分为 CP/P 2500、Great 2000/1500/1250、Good 1000；追加分为 CP 100、P50 75、P100 50、Great 40、Good 30。DX 分为 CP 3、P 2、Great 1、Good/Miss 0。规则参照 [MaiMuriDX 开发笔记](https://github.com/Minepig/MaiMuriDX/blob/master/docs/开发笔记.md)。
 
 ## 安装
 
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/ZhiheZier/astrbot_plugin_maimaidx.git
+git clone https://github.com/Koishi0425/astrbot_plugin_maibot.git
 ```
 
 将插件目录放到 AstrBot 的插件目录下。
@@ -32,7 +45,7 @@ git clone https://github.com/ZhiheZier/astrbot_plugin_maimaidx.git
 AstrBot 不会自动安装插件依赖，需要在 AstrBot 使用的 Python 环境中手动安装：
 
 ```bash
-cd astrbot_plugin_maimaidx
+cd astrbot_plugin_maibot
 pip install -r requirements.txt
 ```
 
@@ -59,9 +72,10 @@ WebUI 配置项：
 - `bot_name`: 机器人名称，默认 `Bot`
 - `enable_reply`: 是否在多数查询结果前添加引用回复
 - `saveinmem`: 是否缓存图片资源到内存，关闭后更省内存但图片生成会稍慢
-- `maimaidxtoken`: Diving-Fish 查分器开发者 token，部分查分/进度接口建议配置
-- `maimaidxproberproxy`: 是否通过代理访问查分器 API
-- `maimaidxaliaspush`: 是否启用别名推送 WebSocket，默认关闭
+- `divingfish_client_id`: 部署者自己的水鱼 OAuth 机密客户端应用标识
+- `divingfish_client_secret`: 对应应用凭据，仅保存在 WebUI 配置中
+- `maimaidxproberproxy`: 是否代理公开曲库、排行榜及公开 B50 查询；OAuth 成绩查询始终直连官方
+- `maimaidxaliaspush`: 是否启用别名投票 SSE 推送，默认关闭
 - `maimaidxaliasvoting`: 是否允许远程别名申请、查看投票和参与投票，默认关闭
 - `maimaidxaliasproxy`: 是否通过代理访问别名服务
 - `maimaidxaliaswhitelist`: 别名推送白名单模式
@@ -69,9 +83,23 @@ WebUI 配置项：
 - `resource_local_path`: 本地资源目录或 `.7z` 文件路径，仅作为资源更新来源
 - `resource_source_url`: 本地资源不可用时使用的资源包 URL，可留空
 - `resource_check_on_startup`: 启动时检查关键静态资源是否缺失
-- `diving_fish_upload_enabled`: 是否允许 Tech 用户上传成绩到水鱼，默认关闭
 
 超级管理员仍使用 AstrBot 主配置中的 `admins_id`，不在插件配置里设置。
+
+### 水鱼 OAuth 配置与迁移
+
+按照[官方迁移说明](https://maimai.diving-fish.com/manual/docs/developer/oauth-migration/)，旧 Developer-Token 及 `/dev/player/records`、`/dev/player/record`、`/query/plate` 将于 **2027 年 1 月 1 日 00:00（UTC+8）** 停用。本插件已改用 OAuth 的 `/player/records`、`/player/record`、`/player/plate`。
+
+1. 部署者登录[水鱼开发者控制台](https://auth.diving-fish.com/console)，优先完善旧 Token 对应的迁移应用；新部署者登记自己的应用。
+2. 选择“由开发者自己部署运行”的机密客户端和设备码接入，申请 `prober.records.read`，启用设备码和换票方式，补全应用名称等资料。
+3. 在控制台生成 `client_secret`，把 `client_id`、`client_secret` 填入本插件的 WebUI 配置。每位部署者使用自己的应用凭据，不在插件源码中分发共用密钥。当前不支持分发共用 Client ID 的公开客户端模式。
+4. 新用户发送 `mai授权`，核对消息和水鱼页面上的用户码、遮挡后的 QQ 身份后确认授权，再发送原查分指令；不需要公网回调地址。非 QQ 平台先使用现有的 `绑定QQ`。
+
+**存量用户通常无需重新授权**：官方已迁移旧 Token 在过去 90 天内实际查询过的用户授权及标识映射。继续使用同一迁移应用后，插件通过 `sha256(client_id + ":" + 原QQ标识)` 换票，保留原映射；只有新用户、未被迁移或已撤销授权的用户才会收到 `mai授权` 提示。更换应用不会继承另一个应用的用户许可。按用户名查询其他玩家也要求该玩家已授权当前应用。
+
+公开 B50、曲库、谱面统计及 `mai识分` 不依赖 OAuth。完整成绩、单曲详情、B40/AP50、完成表、牌子进度及单曲群排行需要授权；群排行只统计能够查询到的成员。访问令牌仅缓存在内存中，按有效期复用；失效后重新换票，不保留用户刷新令牌，也不申请成绩写入权限。用户可在水鱼账号设置中撤销许可；短期换票令牌按官方规则在到期后失效。
+
+接口和设备码行为详见[官方 OAuth API 文档](https://maimai.diving-fish.com/manual/docs/developer/oauth-api-document/)。
 
 ## 静态资源
 
@@ -119,13 +147,11 @@ WebUI 配置项：
 - `绑定QQ <QQ号>`: 绑定当前平台用户到 QQ 号
 - `查看QQ绑定`: 查看当前绑定的 QQ 号
 - `解绑QQ`: 解除当前 QQ 绑定
+- `mai授权`: 新用户或授权失效用户为当前水鱼应用授权成绩读取；已迁移的存量用户无需重复操作
 - `b50 <QQ号或查分器用户名>`: 查询 Best 50
 - `b40 <QQ号或查分器用户名>`: 从全谱面成绩中按单谱 Rating 生成前 40
 - `ap50 <QQ号或查分器用户名>`: 从 AP/AP+ 成绩中按单谱 Rating 生成前 50
 - `pk50 <QQ号或查分器用户名>`: 将自己的 B50 与另一名玩家比较
-- `更新记录`: 使用当前二维码登录并读取完整成绩；任务完成后用 `/tech job <任务号>` 导入缓存
-- 私聊 `上传水鱼 <Import-Token>`: 将当前完整成绩缓存显式上传到水鱼；需在 WebUI 开启上传开关
-- `pc50`: 使用已导入的 sdgb 成绩，按单谱面 `playCount` 生成前 50
 - `谱面统计 <歌曲/ID> [难度]`: 查看 FC率、AP率、平均成绩和本曲难度样本占比
 - `分数线 <歌曲名/别名/ID> [难度]`: 生成判定失分、评级容错与 DX 星级解析图，难度默认紫谱 Master
 - `<版本><目标>进度`: 查询牌子进度，例如 `晓将进度`
@@ -185,8 +211,8 @@ WebUI 配置项：
 - `更新maimai数据`: 更新运行时数据，资源来源已配置时同步安装静态资源
 - `更新舞萌资源`: 要求资源来源已配置，执行数据与静态资源完整更新
 - `更新maimai资源` / `更新maimaiDX资源` / `更新maimaidx资源`: `更新舞萌资源` 的兼容别名
-- `更新定数表`: 重新生成 `static/mai/rating_table`
-- `更新完成表`: 重新生成 `static/mai/plate_table`
+- `更新定数表`: 重新生成插件数据目录中的 `rating_table/`
+- `更新完成表`: 重新生成插件数据目录中的 `plate_table/`
 - `更新别名库`: 更新别名库
 
 ## 首次使用建议
@@ -203,6 +229,7 @@ WebUI 配置项：
 - 使用 AstrBot 的 `admins_id` 权限管理。
 - 配置入口迁移到 AstrBot WebUI。
 - `static/config.json` 已废弃。
+- QQ 绑定、群设置、机厅排卡、曲库/别名缓存及生成表保存在 AstrBot 的 `data/plugin_data/astrbot_plugin_maibot/`。升级时会自动复制旧 `static/` 中的 JSON 数据；已有的新目录数据不会被覆盖。静态绘图资源仍从插件 `static/` 读取。
 
 ## 注意事项
 
@@ -210,32 +237,8 @@ WebUI 配置项：
 - `更新maimai数据` 里的别名数据依赖外部服务，网络不可达时需要检查代理或稍后重试。
 - `saveinmem=false` 可降低内存占用，但图片生成会稍慢。
 - 如果替换了 `static/` 资源，建议重载插件或执行更新命令刷新图片缓存。
-- `更新记录` 会使用当前二维码执行一次登录并消耗该二维码；不再需要 `sdgb_dump_root` 或 QQ→游戏 userId 映射。
-- `上传水鱼` 只在用户明确发送命令时执行，Import-Token 仅用于本次水鱼官方请求，不保存且不经过查分代理。
 - 水鱼公开 `chart_stats` 不提供全服总玩家数，因此 `谱面统计` 的“游玩率”使用同一首歌各难度统计样本的占比，不冒充全服游玩率。
 - 段位目录保存在 `static/dan_courses_cn_prism_plus.json`，课题曲依据 PRiSM PLUS 资料整理；国服发生本地化调整时应直接更新该数据文件。
-
-## 可选私有 Tech 后端
-
-该入口默认关闭，群白名单默认也为空。安装兼容私有后端后：
-
-1. 超级管理员私聊执行 `/tech status`、`/tech enable`；
-2. 超级管理员在目标群执行 `/tech group_enable`；
-3. 该群普通用户才能发送 `SGWCMAID...` 并使用已配置的全部 Tech 能力；
-4. `/tech group_disable` 会立即阻止该群继续触发前端处理器。
-
-二维码会话绑定“群号 + QQ号”，仅在内存中短期保存；解析成功即授权，B50 只用于
-核对，发错时直接发送新二维码覆盖。每次登录
-任务消费一个二维码。完整命令与私有配置见 `astrbot_plugin_sdgbtech/README.md`。
-
-开放后的用户可发送 `tech帮助` 查看简明菜单。若管理员另外在 maibot WebUI
-开启 `diving_fish_upload_enabled`，用户可在“更新记录”任务完成并通过
-`/tech job <任务号>` 导入缓存后，私聊发送 `上传水鱼 <Import-Token>`。该操作只向
-Diving-Fish 官方接口提交标准谱面成绩，宴谱或无法匹配的曲目会被跳过。
-
-“下埋”同时接受数字完成度和达成等级，例如 `下埋 11807 神`。达成等级支持
-`极/极+/将/将+/大将/神/神+`，会按曲目绿、黄、红谱分别随机生成自洽且接近真实
-游玩的判定与 DX 分；数字完成度仍表示精确目标完成度。
 
 ## 许可证
 

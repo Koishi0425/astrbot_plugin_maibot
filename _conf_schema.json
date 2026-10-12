@@ -27,17 +27,23 @@
     "description": "查分器设置",
     "type": "object",
     "items": {
-      "maimaidxtoken": {
-        "description": "Diving-Fish 开发者 Token",
-        "hint": "用于访问需要开发者 token 的查分器接口。",
+      "maimaidxproberproxy": {
+        "description": "查分器代理",
+        "hint": "只代理公开曲库和公开 B50 查询；OAuth 成绩查询始终直连水鱼官方。",
+        "type": "bool",
+        "default": false
+      },
+      "divingfish_client_id": {
+        "description": "水鱼 OAuth Client ID",
+        "hint": "部署者自己的机密客户端应用标识。申请设备码、换票及 prober.records.read 权限。",
         "type": "string",
         "default": ""
       },
-      "maimaidxproberproxy": {
-        "description": "查分器代理",
-        "hint": "是否通过代理访问 Diving-Fish 查分器 API。",
-        "type": "bool",
-        "default": false
+      "divingfish_client_secret": {
+        "description": "水鱼 OAuth Client Secret",
+        "hint": "部署者自己的机密客户端凭据；仅填入 WebUI 配置，不要发到聊天或公开仓库。",
+        "type": "string",
+        "default": ""
       }
     }
   },
@@ -47,7 +53,7 @@
     "items": {
       "maimaidxaliaspush": {
         "description": "别名推送",
-        "hint": "是否启用别名投票推送 WebSocket。",
+        "hint": "是否启用别名投票 SSE 推送。",
         "type": "bool",
         "default": false
       },
@@ -59,7 +65,7 @@
       },
       "maimaidxaliasproxy": {
         "description": "别名服务代理",
-        "hint": "是否通过代理访问别名服务器。",
+        "hint": "通过 yuzuchan.cn 访问别名服务和 SSE 推送。",
         "type": "bool",
         "default": false
       },
@@ -104,30 +110,6 @@
         "hint": "启动时检查关键静态资源是否缺失，并在日志中提示。",
         "type": "bool",
         "default": true
-      }
-    }
-  },
-  "tech": {
-    "description": "私有 SDGB Tech 后端",
-    "type": "object",
-    "items": {
-      "tech_enabled": {
-        "description": "启用 maibot Tech 指令前端",
-        "hint": "默认关闭。仅 AstrBot 超级管理员私聊可通过 /tech enable 开启；具体能力与写入仍由私有后端插件控制。",
-        "type": "bool",
-        "default": false
-      },
-      "tech_enabled_groups": {
-        "description": "允许普通用户使用 Tech 的群号",
-        "hint": "逗号分隔。默认空，普通用户不能触发任何 Tech 功能；建议使用群内 /tech group_enable 管理。",
-        "type": "string",
-        "default": ""
-      },
-      "diving_fish_upload_enabled": {
-        "description": "允许上传成绩到 Diving-Fish",
-        "hint": "默认关闭。开启后，已开放 Tech 的群用户可私聊机器人发送“上传水鱼 <Import-Token>”，显式上传自己的完整成绩缓存；Token 不会保存。",
-        "type": "bool",
-        "default": false
       }
     }
   }

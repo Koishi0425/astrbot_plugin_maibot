@@ -411,6 +411,8 @@ async def search_alias_song_handler(event: AstrMessageEvent):
                     alias_data = obj
         except AliasesNotFoundError:
             pass
+        except Exception:
+            log.warning('Remote alias lookup failed; continuing local search')
     
     if alias_data:
         if len(alias_data) != 1:
@@ -440,7 +442,7 @@ async def search_alias_song_handler(event: AstrMessageEvent):
         yield event.chain_result(chain)
         return
     
-    if search_id := re.search(r'^id([0-9]*)$', name, re.IGNORECASE):
+    if search_id := re.search(r'^id([0-9]+)$', name, re.IGNORECASE):
         music = mai.total_list.by_id(search_id.group(1))
         if music:
             pic = await draw_music_info(music, await resolve_sender_qq_optional(event))

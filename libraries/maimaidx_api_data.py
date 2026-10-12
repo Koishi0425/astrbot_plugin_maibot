@@ -1,21 +1,37 @@
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, List, Optional, Union
 
 from aiohttp import ClientSession, ClientTimeout
+from pydantic import BaseModel
 
-from .. import UUID
-from .maimaidx_error import *
+from .maimaidx_error import (
+    MusicNotPlayError,
+    ServerError,
+    UnknownError,
+    UserDisabledQueryError,
+    UserNotExistsError,
+    UserNotFoundError,
+)
 from .maimaidx_identity import is_numeric_qq
-from .maimaidx_model import *
+from .maimaidx_model import (
+    Alias,
+    AliasStatus,
+    PlayInfoDefault,
+    PlayInfoDev,
+    UserInfo,
+    UserInfoDev,
+    UserRanking,
+)
+from .maimaidx_oauth import DivingFishOAuth, OAuthError
 
 
 class MaiConfig(BaseModel):
-    
-    maimaidxtoken: Optional[str] = None
+    divingfish_client_id: str = ""
+    divingfish_client_secret: str = ""
     maimaidxproberproxy: bool = False
     maimaidxaliasproxy: bool = False
     maimaidxaliaspush: bool = False
     maimaidxaliasvoting: bool = False
-    # True：仅向「开启别名推送」的群广播；False：向所有群广播，但排除 disable 列表（默认，兼容旧行为）
+    # Broadcast only to enabled groups, or to all groups except disabled ones.
     maimaidxaliaswhitelist: bool = False
     saveinmem: Optional[bool] = True
     resource_local_path: str = ""
@@ -25,23 +41,21 @@ class MaiConfig(BaseModel):
 
 
 class MaimaiAPI:
-    
-    MaiProxyAPI = 'https://proxy.yuzuchan.site'
-    
-    MaiProberAPI = 'https://www.diving-fish.com/api/maimaidxprober'
-    MaiCover = 'https://www.diving-fish.com/covers'
-    MaiAliasAPI = 'https://www.yuzuchan.moe/api/maimaidx'
-    QQAPI = 'http://q1.qlogo.cn/g'
-    
+    MaiProxyAPI = "https://proxy.yuzuchan.site"
+
+    MaiProberAPI = "https://www.diving-fish.com/api/maimaidxprober"
+    MaiCover = "https://www.diving-fish.com/covers"
+    MaiAliasAPI = "https://www.yuzuchan.moe/api/v2"
+    QQAPI = "http://q1.qlogo.cn/g"
+
     def __init__(self) -> None:
-        """封装Api"""
+        """Initialize public clients and an unconfigured OAuth client."""
         self.config: MaiConfig = MaiConfig()
-        self.headers = None
-        self.token = None
+        self.oauth = DivingFishOAuth()
         self.MaiProberProxyAPI = None
         self.MaiAliasProxyAPI = None
-        self.load_token_proxy()
-    
+        self.load_proxy()
+
     def load_config(self) -> MaiConfig:
         """Return defaults for old callers.
 
@@ -51,143 +65,138 @@ class MaimaiAPI:
         return MaiConfig()
 
     def configure(self, config: Union[MaiConfig, Dict[str, Any], None] = None) -> None:
+        """Apply WebUI settings and discard tokens issued for previous credentials.
+
+        Args:
+            config: Validated settings, raw settings or defaults.
+        """
         if isinstance(config, MaiConfig):
             self.config = config
         else:
             self.config = MaiConfig.model_validate(config or {})
-        self.load_token_proxy()
-    
-    def load_token_proxy(self) -> None:
-        self.MaiProberProxyAPI = self.MaiProberAPI if not self.config.maimaidxproberproxy else self.MaiProxyAPI + '/maimaidxprober'
-        self.MaiAliasProxyAPI = self.MaiAliasAPI if not self.config.maimaidxaliasproxy else self.MaiProxyAPI + '/maimaidxaliases'
-        self.token = (self.config.maimaidxtoken or '').strip()
-        if self.token:
-            self.headers = {'developer-token': self.token}
-        else:
-            self.headers = None
-    
-    
-    async def _requestalias(self, method: str, endpoint: str, **kwargs) -> APIResult:
-        """
-        别名库通用请求
+        self.oauth = DivingFishOAuth(
+            self.config.divingfish_client_id, self.config.divingfish_client_secret
+        )
+        self.load_proxy()
 
-        Params:
-            `method`: 请求方式
-            `endpoint`: 请求接口
-            `kwargs`: 其它参数
+    def load_proxy(self) -> None:
+        """Select origins for public prober requests and v2 alias requests."""
+        self.MaiProberProxyAPI = (
+            self.MaiProberAPI
+            if not self.config.maimaidxproberproxy
+            else self.MaiProxyAPI + "/maimaidxprober"
+        )
+        self.MaiAliasProxyAPI = (
+            self.MaiAliasAPI
+            if not self.config.maimaidxaliasproxy
+            else "https://www.yuzuchan.cn/api/v2"
+        )
+
+    async def _requestalias(self, method: str, endpoint: str, **kwargs):
+        """Request v2 alias data, retaining user-facing validation messages.
+
+        Args:
+            method: HTTP method.
+            endpoint: Path relative to the v2 service.
+            **kwargs: Request parameters or JSON body.
+
         Returns:
-            `APIResult` 返回结果
-        """
-        async with ClientSession(timeout=ClientTimeout(total=30)) as session:
-            async with session.request(method, self.MaiAliasProxyAPI + endpoint, **kwargs) as res:
-                if res.status == 200:
-                    data = await res.json()
-                    return APIResult.model_validate(data)
-                elif res.status == 500:
-                    raise ServerError
-                else:
-                    raise UnknownError
+            Decoded JSON data or a validation message object.
 
-    async def _requestmai(
-        self, 
-        method: str, 
-        endpoint: str, 
-        **kwargs
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-        """
-        查分器通用请求
-
-        Params:
-            `method`: 请求方式
-            `endpoint`: 请求接口
-            `kwargs`: 其它参数
-        Returns:
-            `Dict[str, Any]` 返回结果
+        Raises:
+            ServerError: The alias service failed.
+            UnknownError: The response was not supported.
         """
         async with ClientSession(timeout=ClientTimeout(total=30)) as session:
             async with session.request(
-                method, 
-                self.MaiProberProxyAPI + endpoint, 
-                headers=self.headers, 
-                **kwargs
+                method, self.MaiAliasProxyAPI + endpoint, **kwargs
             ) as res:
-                if res.status == 200:
-                    data = await res.json()
-                elif res.status == 400:
-                    error: Dict = await res.json()
-                    if 'message' in error:
-                        if error['message'] == 'no such user':
-                            raise UserNotFoundError
-                        elif error['message'] == 'user not exists':
-                            raise UserNotExistsError
-                        else:
-                            raise UserNotFoundError
-                    elif 'msg' in error:
-                        if error['msg'] == '开发者token有误':
-                            raise TokenError
-                        elif error['msg'] == '开发者token被禁用':
-                            raise TokenDisableError
-                        else:
-                            raise TokenNotFoundError
-                    else:
-                        raise UserNotFoundError
-                elif res.status == 403:
-                    raise UserDisabledQueryError
-                else:
-                    raise UnknownError
-        return data
+                data = await res.json()
+                if res.status == 200 or (
+                    400 <= res.status < 500
+                    and isinstance(data, dict)
+                    and "message" in data
+                ):
+                    return data
+                if res.status >= 500:
+                    raise ServerError
+                raise UnknownError
 
-    async def update_records(
-        self,
-        *,
-        import_token: str,
-        records: Sequence[Dict[str, Any]],
-    ) -> Any:
-        """Upload records using a one-shot Diving-Fish Import-Token."""
-        token = str(import_token or "").strip()
-        if not token:
-            raise ValueError("Import-Token 不能为空")
-        if not records:
-            raise ValueError("没有可上传的成绩")
-        # Never send a user's Import-Token through the optional prober proxy.
-        url = self.MaiProberAPI + "/player/update_records"
-        async with ClientSession(timeout=ClientTimeout(total=60)) as session:
-            async with session.post(
-                url,
-                headers={"Import-Token": token},
-                json=list(records),
-            ) as res:
-                try:
-                    data = await res.json(content_type=None)
-                except Exception:
-                    data = {"message": (await res.text())[:200]}
-                if res.status != 200:
-                    message = ""
-                    if isinstance(data, dict):
-                        message = str(data.get("message") or data.get("msg") or "")
-                    raise RuntimeError(
-                        f"水鱼接口返回 HTTP {res.status}"
-                        + (f"：{message}" if message else "")
-                    )
-                return data
-    
+    async def _requestmai(
+        self, method: str, endpoint: str, *, subject: Optional[str] = None, **kwargs
+    ):
+        """Request public data or OAuth-protected records on the official origin.
+
+        Args:
+            method: HTTP method.
+            endpoint: Prober resource path.
+            subject: Authorized user lookup key; absent for public endpoints.
+            **kwargs: Resource-specific request parameters.
+
+        Returns:
+            Decoded prober JSON data.
+
+        Raises:
+            OAuthError: Consent, credentials, permissions or quotas prevent access.
+            UserNotFoundError: A public query found no matching player.
+            UserDisabledQueryError: The player disabled public queries.
+            UnknownError: The resource server failed.
+        """
+        base = self.MaiProberAPI if subject else self.MaiProberProxyAPI
+        async with ClientSession(timeout=ClientTimeout(total=30)) as session:
+            for attempt in range(2):
+                headers = None
+                if subject:
+                    token = await self.oauth.access_token(subject, force=attempt > 0)
+                    headers = {"Authorization": f"Bearer {token}"}
+                async with session.request(
+                    method,
+                    base + endpoint,
+                    headers=headers,
+                    allow_redirects=False,
+                    **kwargs,
+                ) as res:
+                    if res.status == 200:
+                        return await res.json()
+                    if subject:
+                        if res.status == 401 and attempt == 0:
+                            continue
+                        if res.status == 401:
+                            raise OAuthError("水鱼授权已失效，请重新发送 mai授权。")
+                        if res.status == 403:
+                            raise OAuthError(
+                                "水鱼拒绝访问，请确认已同意查分器协议并授权成绩读取权限。"
+                            )
+                        if res.status == 429:
+                            raise OAuthError("水鱼查询已达配额，请稍后重试。")
+                        if res.status == 400:
+                            raise OAuthError(
+                                "水鱼成绩请求被拒绝，请检查账号和查询参数。"
+                            )
+                        raise OAuthError("水鱼成绩服务暂时不可用，请稍后重试。")
+                    if res.status == 400:
+                        error = await res.json()
+                        if error.get("message") == "user not exists":
+                            raise UserNotExistsError
+                        raise UserNotFoundError
+                    if res.status == 403:
+                        raise UserDisabledQueryError
+                    raise UnknownError
+
     async def music_data(self):
         """获取曲目数据"""
-        return await self._requestmai('GET', '/music_data')
+        return await self._requestmai("GET", "/music_data")
 
     async def chart_stats(self):
         """获取单曲数据"""
-        return await self._requestmai('GET', '/chart_stats')
+        return await self._requestmai("GET", "/chart_stats")
 
     async def query_user_b50(
-        self, 
-        *, 
-        qqid: Optional[int] = None, 
-        username: Optional[str] = None
+        self, *, qqid: Optional[int] = None, username: Optional[str] = None
     ) -> UserInfo:
         """
         获取玩家B50
-        
+
         Params:
             `qqid`: QQ号
             `username`: 用户名
@@ -197,233 +206,195 @@ class MaimaiAPI:
         json = {}
         if qqid:
             if not is_numeric_qq(qqid):
-                raise ValueError('qqid must be numeric')
-            json['qq'] = qqid
+                raise ValueError("qqid must be numeric")
+            json["qq"] = qqid
         if username:
-            json['username'] = username
-        json['b50'] = True
+            json["username"] = username
+        json["b50"] = True
 
-        return UserInfo.model_validate(await self._requestmai('POST', '/query/player', json=json))
+        return UserInfo.model_validate(
+            await self._requestmai("POST", "/query/player", json=json)
+        )
 
     async def query_user_plate(
-        self,
-        *,
-        qqid: Optional[int] = None,
-        username: Optional[str] = None,
-        version: Optional[List[str]] = None
+        self, *, qqid=None, username=None, version: Optional[List[str]] = None
     ) -> List[PlayInfoDefault]:
-        """
-        请求用户数据
+        """Read version-filtered records using the player's OAuth identity.
 
-        Params:
-            `qqid`: 用户QQ
-            `username`: 查分器用户名
-            `version`: 版本
+        Args:
+            qqid: QQ identifier of an authorized player.
+            username: Prober username of an authorized player.
+            version: Version names to include.
+
         Returns:
-            `List[PlayInfoDefault]` 数据列表
+            Records suitable for plate and completion-table queries.
         """
-        json = {}
-        if qqid:
-            if not is_numeric_qq(qqid):
-                raise ValueError('qqid must be numeric')
-            json['qq'] = qqid
-        if username:
-            json['username'] = username
-        if version:
-            json['version'] = version
-        result = await self._requestmai('POST', '/query/plate', json=json)
-        return [PlayInfoDefault.model_validate(d) for d in result['verlist']]
+        subject = self.oauth.subject(qqid=qqid, username=username)
+        result = await self._requestmai(
+            "POST", "/player/plate", subject=subject, json={"version": version or []}
+        )
+        return [PlayInfoDefault.model_validate(d) for d in result["verlist"]]
 
-    async def query_user_get_dev(
-        self, 
-        *, 
-        qqid: Optional[int] = None, 
-        username: Optional[str] = None
-    ) -> UserInfoDev:
-        """
-        使用开发者接口获取用户数据，请确保拥有和输入了开发者 `token`
+    async def query_user_records(self, *, qqid=None, username=None) -> UserInfoDev:
+        """Read the authorized player's complete record collection.
 
-        Params:
-            qqid: 用户QQ
-            username: 查分器用户名
+        Args:
+            qqid: QQ identifier of an authorized player.
+            username: Prober username of an authorized player.
+
         Returns:
-            `UserInfoDev` 开发者用户信息
+            Player information and all chart records.
         """
-        params = {}
-        if qqid:
-            if not is_numeric_qq(qqid):
-                raise ValueError('qqid must be numeric')
-            params['qq'] = qqid
-        if username:
-            params['username'] = username
-        
-        result = await self._requestmai('GET', '/dev/player/records', params=params)
+        subject = self.oauth.subject(qqid=qqid, username=username)
+        result = await self._requestmai("GET", "/player/records", subject=subject)
         return UserInfoDev.model_validate(result)
 
-    async def query_user_post_dev(
+    async def query_user_record(
         self,
         *,
-        qqid: Optional[int] = None,
-        username: Optional[str] = None,
-        music_id: Union[str, int, List[Union[str, int]]]
+        qqid=None,
+        username=None,
+        music_id: Union[str, int, List[Union[str, int]]],
     ) -> List[PlayInfoDev]:
-        """
-        使用开发者接口获取用户指定曲目数据，请确保拥有和输入了开发者 `token`
+        """Read an authorized player's records for selected songs.
 
-        Params:
-            `qqid`: 用户QQ
-            `username`: 查分器用户名
-            `music_id`: 曲目id，可以为单个ID或者列表
+        Args:
+            qqid: QQ identifier of an authorized player.
+            username: Prober username of an authorized player.
+            music_id: One song ID or a list of IDs.
+
         Returns:
-            `List[PlayInfoDev]` 开发者成绩列表
+            Available records for the requested songs.
+
+        Raises:
+            MusicNotPlayError: No requested song was played.
         """
-        json = {}
-        if qqid:
-            if not is_numeric_qq(qqid):
-                raise ValueError('qqid must be numeric')
-            json['qq'] = qqid
-        if username:
-            json['username'] = username
-        json['music_id'] = music_id
-        
-        result = await self._requestmai('POST', '/dev/player/record', json=json)
-        if result == {}:
+        subject = self.oauth.subject(qqid=qqid, username=username)
+        result = await self._requestmai(
+            "POST", "/player/record", subject=subject, json={"music_id": music_id}
+        )
+        if not result:
             raise MusicNotPlayError
-        
-        if isinstance(music_id, list):
-            return [PlayInfoDev.model_validate(d) for k, v in result.items() for d in v]
-        return [PlayInfoDev.model_validate(d) for d in result[str(music_id)]]
+        return [
+            PlayInfoDev.model_validate(d)
+            for records in result.values()
+            for d in records
+        ]
 
     async def rating_ranking(self) -> List[UserRanking]:
         """
         获取查分器排行榜
-        
+
         Returns:
             `List[UserRanking]` 按`ra`从高到低排序后的查分器排行模型列表
         """
-        result = await self._requestmai('GET', '/rating_ranking')
-        return sorted([UserRanking.model_validate(u) for u in result], key=lambda x: x.ra, reverse=True)
+        result = await self._requestmai("GET", "/rating_ranking")
+        return sorted(
+            [UserRanking.model_validate(u) for u in result],
+            key=lambda x: x.ra,
+            reverse=True,
+        )
 
     async def get_plate_json(self) -> Dict[str, List[int]]:
-        """获取所有版本牌子完成需求"""
-        result = await self._requestalias('GET', '/maimaidxplate')
-        if result.code == 0:
-            return result.content
-        raise UnknownError
-    
-    async def get_alias(self) -> Dict[str, Union[str, int, List[str]]]:
-        """获取所有别名"""
-        result = await self._requestalias('GET', '/maimaidxalias')
-        if result.code == 0:
-            return result.content
-        raise UnknownError
+        """Return the public version-to-plate catalog."""
+        return await self._requestalias("GET", "/maimaidx/music/get_plate")
+
+    async def get_alias(self) -> list:
+        """Return aliases normalized to the existing local cache schema."""
+        result = await self._requestalias("GET", "/aliases/maimaidx/aliases")
+        return [Alias.model_validate(item).model_dump() for item in result]
 
     async def get_songs(self, name: str) -> Union[List[AliasStatus], List[Alias]]:
-        """
-        使用别名查询曲目。
-        `code` 为 `0` 时返回值为 `List[Alias]`。
-        `code` 为 `3006` 时返回值为 `List[AliasStatus]`。
-        
-        Params:
-            `name`: 别名
-        Returns:
-            `Union[List[AliasStatus], List[Alias]]`
-        """
-        result = await self._requestalias('GET', '/getsongs', params={'name': name})
-        if result.code == 3006:
-            return [AliasStatus.model_validate(s) for s in result.content]
-        elif result.code == 1004:
-            return []
-        elif result.code == 0:
-            return [Alias.model_validate(s) for s in result.content]
-        else:
-            raise UnknownError
+        """Search aliases and ongoing votes by name.
 
-    async def get_songs_alias(self, song_id: int) -> Alias:
-        """
-        使用曲目 `id` 查询别名
-        
-        Params:
-            `song_id`: 曲目 `ID`
+        Args:
+            name: Alias to search for.
+
         Returns:
-            `Alias` | `str`
+            Matching songs, votes, or an empty list.
         """
-        result = await self._requestalias('GET', '/getsongsalias', params={'song_id': song_id})
-        if result.code == 0:
-            return Alias.model_validate(result.content)
-        elif result.code == 1004:
-            return result.content
-        else:
-            raise UnknownError
+        result = await self._requestalias(
+            "GET", "/aliases/maimaidx/songs", params={"name": name}
+        )
+        if "message" in result:
+            return []
+        model = AliasStatus if result["type"] == "ongoing" else Alias
+        return [model.model_validate(item) for item in result["data"]]
+
+    async def get_songs_alias(self, song_id: int) -> Union[Alias, str]:
+        """Look up the aliases of one song.
+
+        Args:
+            song_id: Song ID.
+
+        Returns:
+            Alias information or the service's validation message.
+        """
+        result = await self._requestalias(
+            "GET", "/aliases/maimaidx/aliases", params={"song_id": song_id}
+        )
+        return (
+            result["message"] if "message" in result else Alias.model_validate(result)
+        )
 
     async def get_alias_status(self) -> List[AliasStatus]:
-        """获取当前正在进行的别名投票"""
-        result = await self._requestalias('GET', '/getaliasstatus')
-        if result.code == 0:
-            return [AliasStatus.model_validate(s) for s in result.content]
-        elif result.code == 1004:
-            return []
-        else:
-            raise UnknownError
+        """Return all ongoing alias votes."""
+        result = await self._requestalias(
+            "GET", "/aliases/maimaidx/votes", params={"status": "ongoing"}
+        )
+        return [AliasStatus.model_validate(item) for item in result]
 
     async def post_alias(
-        self, 
-        song_id: int, 
-        aliasname: str, 
-        user_id: int,
-        group_id: int
-    ) -> Union[AliasStatus, str]:
-        """
-        提交别名申请
+        self, song_id: int, aliasname: str, user_id: int, group_id: int
+    ) -> str:
+        """Submit a song alias through the v2 service.
 
-        Params:
-            `id`: 曲目 `id`
-            `aliasname`: 别名
-            `user_id`: 提交的用户
+        Args:
+            song_id: Song ID.
+            aliasname: Proposed alias.
+            user_id: Applicant's QQ identifier.
+            group_id: Originating group identifier.
+
         Returns:
-            `AliasStatus`
+            The service's user-facing result message.
         """
-        json = {
-            'SongID': song_id,
-            'ApplyAlias': aliasname,
-            'ApplyUID': user_id,
-            'GroupID': group_id,
-            'WSUUID': str(UUID)
-        }
-        result = await self._requestalias('POST', '/applyalias', json=json)
-        return result.content
-    
+        result = await self._requestalias(
+            "POST",
+            "/aliases/maimaidx/apply",
+            json={
+                "song_id": song_id,
+                "apply_alias": aliasname,
+                "apply_uid": user_id,
+                "group_id": group_id,
+            },
+        )
+        return result["message"]
+
     async def post_agree_user(self, tag: str, user_id: int) -> str:
-        """
-        提交同意投票
+        """Submit a vote for a pending alias.
 
-        Params:
-            `tag`: 标签
-            `user_id`: 同意投票的用户
+        Args:
+            tag: Vote identifier.
+            user_id: Voter's QQ identifier.
+
         Returns:
-            `str`
+            The service's user-facing result message.
         """
-        json = {
-            'Tag': tag,
-            'AgreeUser': user_id
-        }
-        result = await self._requestalias('POST', '/agreeuser', json=json)
-        return result.content
+        result = await self._requestalias(
+            "POST", "/aliases/maimaidx/votes", json={"tag": tag, "agree_user": user_id}
+        )
+        return result["message"]
 
     async def qqlogo(self, qqid: int = None, icon: str = None) -> Optional[bytes]:
         """获取QQ头像"""
         async with ClientSession(timeout=ClientTimeout(total=30)) as session:
             if qqid:
                 if not is_numeric_qq(qqid):
-                    raise ValueError('qqid must be numeric')
-                params = {
-                    'b': 'qq',
-                    'nk': qqid,
-                    's': 100
-                }
-                res = await session.request('GET', self.QQAPI, params=params)
+                    raise ValueError("qqid must be numeric")
+                params = {"b": "qq", "nk": qqid, "s": 100}
+                res = await session.request("GET", self.QQAPI, params=params)
             elif icon:
-                res = await session.request('GET', icon)
+                res = await session.request("GET", icon)
             else:
                 return None
             return await res.read()

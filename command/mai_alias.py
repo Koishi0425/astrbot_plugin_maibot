@@ -11,14 +11,13 @@ import astrbot.api.message_components as Comp
 
 from astrbot.api.event import AstrMessageEvent
 
-from .. import SONGS_PER_PAGE, UUID, log, public_addr
-from ..command.mai_base import convert_message_segment_to_chain
+from .. import SONGS_PER_PAGE, log, public_addr
+from ..libraries.maimaidx_alias_stream import iter_sse
 from ..libraries.image import image_to_base64, text_to_image
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import ServerError
 from ..libraries.maimaidx_model import Alias, PushAliasStatus
 from ..libraries.maimaidx_music import alias, mai, update_local_alias
-from ..libraries.maimaidx_music_info import draw_music_info
 
 
 async def convert_chain_to_onebot_format(chain: List[Any]):
@@ -355,126 +354,36 @@ async def alias_switch_handler(event: AstrMessageEvent):
 
 
 async def push_alias(push: PushAliasStatus, context=None):
+    """Broadcast v2 alias applications to configured OneBot groups.
+
+    Args:
+        push: An Apply event containing one or more vote entries.
+        context: AstrBot context used to locate the OneBot client.
     """
-    推送别名通知
-    context: astrbot 的 Context 对象，用于获取 bot client
-    """
-    if not context:
-        log.warning('push_alias: context 未提供，无法发送别名推送消息')
+    if push.Type != "Apply" or not maiApi.config.maimaidxaliaspush or context is None:
         return
-    
-    # 获取 bot client
-    bot_client = None
-    try:
-        from astrbot.api.event import filter
-        platform = context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-        if platform:
-            bot_client = platform.get_client()
-    except Exception as e:
-        log.error(f'获取 bot client 失败: {e}')
-        log.error(traceback.format_exc())
+    from astrbot.api.event import filter
+
+    platform = context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+    if platform is None:
+        log.warning("No OneBot platform available for alias notifications")
         return
-    
-    if not bot_client:
-        log.warning('无法获取 bot_client，跳过别名推送')
+    bot_client = platform.get_client()
+    text = [f"检测到新的别名申请，可使用「同意别名 标签」投票。\n详情：{public_addr}"]
+    for item in push.Status:
+        music = mai.total_list.by_id(item.SongID)
+        if music is None:
+            log.warning("Skipping alias notification for an unknown song")
+            continue
+        text.append(
+            f"{item.Tag}：\nID：{item.SongID}\n标题：{music.title}\n别名：{item.ApplyAlias}"
+        )
+    if len(text) == 1:
         return
-    
-    song_id = str(push.Status.SongID)
-    alias_name = push.Status.ApplyAlias
-    music = mai.total_list.by_id(song_id)
-    
-    if push.Type == 'Approved':
-        text_msg = dedent(f'''\
-            您申请的别名已通过审核
-            =================
-            {push.Status.Tag}：
-            ID：{song_id}
-            标题：{music.title}
-            别名：{alias_name}
-            =================
-            请使用指令「同意别名 {push.Status.Tag}」进行投票
-        ''').strip()
-        pic = await draw_music_info(music)
-        chain = convert_message_segment_to_chain(pic)
-        chain.insert(0, Comp.At(qq=push.Status.ApplyUID))
-        # 直接使用字符串而不是 Comp.Plain，避免 JSON 序列化问题
-        chain.insert(1, '\n' + text_msg)
-        try:
-            # 将消息链转换为 OneBot 格式
-            onebot_chain = await convert_chain_to_onebot_format(chain)
-            await bot_client.send_group_msg(group_id=push.Status.GroupID, message=onebot_chain)
-        except Exception as e:
-            log.error(f'发送别名审核通过消息失败: {e}')
-        return
-    
-    if push.Type == 'Reject':
-        text_msg = dedent(f'''\
-            您申请的别名被拒绝
-            =================
-            ID：{song_id}
-            标题：{music.title}
-            别名：{alias_name}
-        ''').strip()
-        pic = await draw_music_info(music)
-        chain = convert_message_segment_to_chain(pic)
-        chain.insert(0, Comp.At(qq=push.Status.ApplyUID))
-        # 直接使用字符串而不是 Comp.Plain，避免 JSON 序列化问题
-        chain.insert(1, '\n' + text_msg)
-        try:
-            # 将消息链转换为 OneBot 格式
-            onebot_chain = await convert_chain_to_onebot_format(chain)
-            await bot_client.send_group_msg(group_id=push.Status.GroupID, message=onebot_chain)
-        except Exception as e:
-            log.error(f'发送别名拒绝消息失败: {e}')
-        return
-    
-    if not maiApi.config.maimaidxaliaspush:
-        await mai.get_music_alias()
-        return
-    
-    # 获取群组列表
-    try:
-        group_list = await bot_client.get_group_list()
-        # 去重，避免重复推送别名
-        group_ids = list({g['group_id'] for g in group_list})
-    except Exception as e:
-        log.error(f'获取群组列表失败: {e}')
-        return
-    
-    message_chain = None
-    if push.Type == 'Apply':
-        text_msg = dedent(f'''\
-            检测到新的别名申请
-            =================
-            {push.Status.Tag}：
-            ID：{song_id}
-            标题：{music.title}
-            别名：{alias_name}
-            浏览{public_addr}查看详情
-        ''').strip()
-        pic = await draw_music_info(music)
-        chain = convert_message_segment_to_chain(pic)
-        # 直接使用字符串而不是 Comp.Plain，避免 JSON 序列化问题
-        chain.insert(0, text_msg + '\n')
-        message_chain = chain
-    elif push.Type == 'End':
-        text_msg = dedent(f'''\
-            检测到新增别名
-            =================
-            ID：{song_id}
-            标题：{music.title}
-            别名：{alias_name}
-        ''').strip()
-        pic = await draw_music_info(music)
-        chain = convert_message_segment_to_chain(pic)
-        # 直接使用字符串而不是 Comp.Plain，避免 JSON 序列化问题
-        chain.insert(0, text_msg + '\n')
-        message_chain = chain
-    
-    if not message_chain:
-        return
-    
-    for gid in group_ids:
+    text.append("使用「关闭别名推送」可关闭本群推送。")
+    message = [{"type": "text", "data": {"text": "\n\n".join(text)}}]
+    group_list = await bot_client.get_group_list()
+    for gid in dict.fromkeys(item["group_id"] for item in group_list):
         gid_str = str(gid)
         if maiApi.config.maimaidxaliaswhitelist:
             if gid_str not in alias.push.enable:
@@ -482,59 +391,58 @@ async def push_alias(push: PushAliasStatus, context=None):
         elif gid_str in alias.push.disable:
             continue
         try:
-            # 将消息链转换为 OneBot 格式
-            onebot_message = await convert_chain_to_onebot_format(message_chain)
-            await bot_client.send_group_msg(group_id=gid, message=onebot_message)
+            await bot_client.send_group_msg(group_id=gid, message=message)
             await asyncio.sleep(5)
-        except Exception as e:
-            log.warning(f'发送别名推送消息到群 {gid} 失败: {e}')
-            continue
+        except Exception:
+            log.exception("Failed to send an alias notification")
 
 
-async def ws_alias_server(context=None):
+async def sse_alias_server(context=None):
+    """Consume public v2 alias events and resume after reconnecting.
+
+    Args:
+        context: AstrBot context used for optional group notifications.
     """
-    别名推送 WebSocket 服务器
-    context: astrbot 的 Context 对象，用于获取 bot client
-    """
-    log.info('正在连接别名推送服务器')
-    if maiApi.config.maimaidxaliasproxy:
-        wsapi = 'proxy.yuzuchan.site/maimaidxaliases'
-    else:
-        wsapi = 'www.yuzuchan.moe/api/maimaidx'
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(f'wss://{wsapi}/ws/{UUID}') as ws:
-                    log.info('别名推送服务器连接成功')
-                    while True:
-                        data = await ws.receive_str()
-                        # 处理 WebSocket 心跳消息
-                        if data == 'Hello':
-                            log.info('别名推送服务器正常运行')
-                            continue
-                        if data == 'ping' or data == 'pong':
-                            # WebSocket 心跳消息，忽略
-                            continue
-                        if not data or not data.strip():
-                            continue
+    api = (
+        "https://www.yuzuchan.cn/api/v2/events"
+        if maiApi.config.maimaidxaliasproxy
+        else "https://www.yuzuchan.moe/api/v2/events"
+    )
+    last_event_id = None
+    reconnect_delay = 3.0
+    timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=90)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while maiApi.config.maimaidxaliaspush:
+            headers = {"Accept": "text/event-stream"}
+            if last_event_id:
+                headers["Last-Event-ID"] = last_event_id
+            try:
+                async with session.get(api, headers=headers) as response:
+                    response.raise_for_status()
+                    if response.content_type != "text/event-stream":
+                        raise ValueError("Alias server returned a non-SSE response")
+                    log.info("Connected to the alias SSE service")
+
+                    async for event in iter_sse(response.content):
                         try:
-                            newdata = json.loads(data)
-                            status = PushAliasStatus.model_validate(newdata)
-                            await push_alias(status, context)
-                        except json.JSONDecodeError as e:
-                            # 如果不是已知的控制消息，才记录警告
-                            if data not in ['ping', 'pong', 'Hello']:
-                                log.warning(f'别名推送数据 JSON 解析失败: {e}, 数据: {data[:100] if len(data) > 100 else data}')
-                            continue
-                        except Exception as e:
-                            log.warning(f'处理别名推送数据失败: {e}')
-                            log.debug(traceback.format_exc())
-                            continue
-        except (aiohttp.WSServerHandshakeError, aiohttp.WebSocketError) as e:
-            log.warning(f'连接断开或异常: {e}，将在 60 秒后重连')
-            await asyncio.sleep(60)
-            continue
-        except Exception as e:
-            log.error(f'别名推送服务器连接失败: {e}，将在 60 秒后重试')
-            await asyncio.sleep(60)
-            continue
+                            if event["retry"] is not None:
+                                reconnect_delay = min(
+                                    60, max(0.1, event["retry"] / 1000)
+                                )
+                            if event["event"] == "alias":
+                                payload = json.loads(event["data"])
+                                if payload.get("type") == "Apply":
+                                    await push_alias(
+                                        PushAliasStatus.model_validate(payload), context
+                                    )
+                            if event["id"] is not None:
+                                last_event_id = event["id"] or None
+                        except (ValueError, TypeError):
+                            log.warning("Ignoring an invalid alias SSE event")
+                            if event["id"] is not None:
+                                last_event_id = event["id"] or None
+                        except Exception:
+                            log.exception("Failed to process an alias SSE event")
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                log.warning("Alias SSE connection lost; reconnecting")
+            await asyncio.sleep(reconnect_delay)

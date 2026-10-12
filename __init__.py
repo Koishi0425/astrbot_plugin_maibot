@@ -1,13 +1,9 @@
-import uuid
 from pathlib import Path
+import shutil
 from typing import Dict, List
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
+from astrbot.api.star import StarTools
 
 ### 必须
 log = logger
@@ -76,9 +72,6 @@ class MessageSegment:
 public_addr = 'https://www.yuzuchan.moe/vote'
 
 
-# ws
-UUID = uuid.uuid1()
-
 # echartsjs
 SNAPSHOT_JS = (
     "echarts.getInstanceByDom(document.querySelector('div[_echarts_instance_]'))."
@@ -89,35 +82,57 @@ SNAPSHOT_JS = (
 # 文件路径
 Root: Path = Path(__file__).parent
 static: Path = Root / 'static'
-fontdir: Path = static / 'font'
+fontdir: Path = static / "font"
 
-arcades_json: Path = static / 'arcades.json'                    # 机厅
-config_json: Path = static / 'config.json'                      # legacy path; runtime config comes from AstrBot WebUI
-alias_file: Path = static / 'music_alias.json'                  # 别名暂存文件
-local_alias_file: Path = static / 'local_music_alias.json'      # 本地别名文件
-music_file: Path = static / 'music_data.json'                   # 曲目暂存文件
-chart_file: Path = static / 'music_chart.json'                  # 谱面数据暂存文件
-guess_file: Path = static / 'group_guess_switch.json'           # 猜歌开关群文件
-group_alias_file: Path = static / 'group_alias_switch.json'     # 别名推送开关群文件
-user_qq_bindings_file: Path = static / 'user_qq_bindings.json'  # 平台用户ID到QQ号绑定
-group_rating_file: Path = static / 'group_rating_users.json'    # 群 Rating 榜成员与个性设置
-pie_html_file: Path = static / 'temp_pie.html'                  # 饼图html文件
+data_dir: Path = StarTools.get_data_dir("astrbot_plugin_maibot")
+arcades_json: Path = data_dir / "arcades.json"
+alias_file: Path = data_dir / "music_alias.json"
+local_alias_file: Path = data_dir / "local_music_alias.json"
+music_file: Path = data_dir / "music_data.json"
+chart_file: Path = data_dir / "music_chart.json"
+guess_file: Path = data_dir / "group_guess_switch.json"
+group_alias_file: Path = data_dir / "group_alias_switch.json"
+user_qq_bindings_file: Path = data_dir / "user_qq_bindings.json"
+group_rating_file: Path = data_dir / "group_rating_users.json"
+pie_html_file: Path = data_dir / "temp_pie.html"
+
+# Preserve legacy settings without replacing data already migrated or updated.
+for _filename in (
+    "arcades.json",
+    "music_alias.json",
+    "local_music_alias.json",
+    "music_data.json",
+    "music_chart.json",
+    "group_guess_switch.json",
+    "group_alias_switch.json",
+    "user_qq_bindings.json",
+    "group_rating_users.json",
+    "disabled_groups.json",
+):
+    _source = static / _filename
+    _destination = data_dir / _filename
+    if _source.is_file() and not _destination.exists():
+        try:
+            shutil.copy2(_source, _destination)
+        except OSError:
+            log.error("Unable to migrate legacy plugin data: %s", _filename)
+            raise
 
 
 # 静态资源路径
-maimaidir: Path = static / 'mai' / 'pic'
-themepicdir: Path = maimaidir / 'prism_plus'
-coverdir: Path = static / 'mai' / 'cover'
-plate_versiondir: Path = static / 'mai' / 'plate_version'
-shougoudir: Path = static / 'mai' / 'shougou'
+maimaidir: Path = static / "mai" / "pic"
+themepicdir: Path = maimaidir / "prism_plus"
+coverdir: Path = static / "mai" / "cover"
+plate_versiondir: Path = static / "mai" / "plate_version"
+shougoudir: Path = static / "mai" / "shougou"
 # 新版资源将生成表与牌子图分离：rating_table/plate_table 为生成表，plate_version 为牌子图。
-ratingdir: Path = static / 'mai' / 'rating_table'
-platedir: Path = static / 'mai' / 'plate_table'
+ratingdir: Path = data_dir / "rating_table"
+platedir: Path = data_dir / "plate_table"
 
 
 # 字体路径
-SIYUAN: Path =  fontdir / 'ResourceHanRoundedCN-Bold.ttf'
-SHANGGUMONO: Path = fontdir / 'ShangguMonoSC-Regular.otf'
+SIYUAN: Path = fontdir / "ResourceHanRoundedCN-Bold.ttf"
+SHANGGUMONO: Path = fontdir / "ShangguMonoSC-Regular.otf"
 TBFONT: Path = fontdir / 'Torus SemiBold.otf'
 
 
