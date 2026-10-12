@@ -7,7 +7,11 @@ from astrbot.api.event import AstrMessageEvent
 from .. import log
 from ..libraries.maimaidx_api_data import MaiConfig, maiApi
 from ..libraries.maimaidx_music import mai
-from ..libraries.maimaidx_resource import ResourceInstallError, install_maimai_resources, refresh_resource_cache
+from ..libraries.maimaidx_resource import (
+    ResourceInstallError,
+    install_maimai_resources,
+    refresh_resource_cache,
+)
 from .mai_arcade import is_superuser
 
 
@@ -15,7 +19,10 @@ MAIMAI_UPDATE_LOCK = asyncio.Lock()
 
 
 def _has_resource_source(config: MaiConfig) -> bool:
-    return bool((config.resource_local_path or "").strip() or (config.resource_source_url or "").strip())
+    return bool(
+        (config.resource_local_path or "").strip()
+        or (config.resource_source_url or "").strip()
+    )
 
 
 async def _update_runtime_data() -> str:
@@ -24,12 +31,20 @@ async def _update_runtime_data() -> str:
     await mai.get_music_alias()
     mai.guess()
 
-    music_count = len(mai.total_list) if hasattr(mai, "total_list") and mai.total_list else 0
-    alias_count = len(mai.total_alias_list) if hasattr(mai, "total_alias_list") and mai.total_alias_list else 0
+    music_count = (
+        len(mai.total_list) if hasattr(mai, "total_list") and mai.total_list else 0
+    )
+    alias_count = (
+        len(mai.total_alias_list)
+        if hasattr(mai, "total_alias_list") and mai.total_alias_list
+        else 0
+    )
     return f"数据更新完成：歌曲 {music_count} 首，别名 {alias_count} 条。"
 
 
-async def _update_static_resources(config: MaiConfig, require_source: bool) -> list[str]:
+async def _update_static_resources(
+    config: MaiConfig, require_source: bool
+) -> list[str]:
     if not _has_resource_source(config) and not require_source:
         return ["静态资源跳过：未配置本地资源路径或资源 URL。"]
 
@@ -38,15 +53,17 @@ async def _update_static_resources(config: MaiConfig, require_source: bool) -> l
         url=config.resource_source_url,
     )
 
-    try:
-        refresh_resource_cache()
-        cache_msg = "已刷新内存图片缓存。"
-    except Exception as e:
-        log.warning(f"刷新资源缓存失败: {e}")
-        cache_msg = "资源已安装，但刷新内存图片缓存失败，请重载插件或重启 AstrBot。"
+    cache_msg = "资源不完整，暂未刷新图片缓存；请补齐完整资源包后再次更新。"
+    if result.ok:
+        try:
+            refresh_resource_cache()
+            cache_msg = "已刷新内存图片缓存。"
+        except Exception:
+            log.exception("Failed to refresh installed resource images")
+            cache_msg = "图片缓存刷新失败，请检查日志中的缺失或损坏素材后重载插件。"
 
     msg = [
-        "静态资源更新完成。",
+        "静态资源更新完成。" if result.ok else "静态资源安装未完成。",
         f"已复制文件数：{result.copied_files}",
         "安装目标：static/。",
         "配置已由 AstrBot WebUI 管理，未读写 static/config.json。",
@@ -103,10 +120,16 @@ async def update_maimai_all_handler(
 
         resource_config = config or maiApi.config
         try:
-            resource_messages = await _update_static_resources(resource_config, require_resource_source)
+            resource_messages = await _update_static_resources(
+                resource_config, require_resource_source
+            )
             messages.extend(resource_messages)
-            resource_skipped = bool(resource_messages and resource_messages[0].startswith("静态资源跳过"))
-            resource_ok = bool(resource_messages and not resource_skipped)
+            resource_skipped = bool(
+                resource_messages and resource_messages[0].startswith("静态资源跳过")
+            )
+            resource_ok = bool(
+                resource_messages and resource_messages[0] == "静态资源更新完成。"
+            )
         except ResourceInstallError as e:
             messages.append(f"静态资源更新失败：{e}")
             messages.append("请联系管理员检查 WebUI 中的本地资源路径或资源 URL。")

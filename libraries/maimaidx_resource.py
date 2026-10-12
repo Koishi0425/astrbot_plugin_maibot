@@ -73,6 +73,11 @@ EXPECTED_RESOURCE_PATHS = (
     maimaidir / "border_progress_expert.png",
     maimaidir / "border_progress_master.png",
     maimaidir / "border_progress_remaster.png",
+    *(
+        maimaidir / f"{prefix}_{difficulty}.png"
+        for prefix in ("b50_score", "rise_score")
+        for difficulty in ("basic", "advanced", "expert", "master", "remaster")
+    ),
     maimaidir / "UI_Icon_509506.png",
     maimaidir / "UI_Plate_550101.png",
     *(static / "font" / name for name in FONT_NAMES),
@@ -155,7 +160,9 @@ def _is_rating_digit_update(path: Path) -> bool:
 def _find_rating_digit_update(path: Path) -> Optional[Path]:
     if _is_rating_digit_update(path):
         return path
-    candidates = [p for p in path.rglob("*") if p.is_dir() and _is_rating_digit_update(p)]
+    candidates = [
+        p for p in path.rglob("*") if p.is_dir() and _is_rating_digit_update(p)
+    ]
     candidates.sort(key=lambda p: len(p.parts))
     return candidates[0] if candidates else None
 
@@ -244,14 +251,20 @@ def _copy_rating_digit_update(source_dir: Path, result: ResourceInstallResult) -
 
 
 def _install_resource_dir(source: Path, result: ResourceInstallResult) -> None:
-    rating_update = _find_rating_digit_update(source)
-    if rating_update and not _has_static_markers(source) and not (source / "static").is_dir():
-        _copy_rating_digit_update(rating_update, result)
-        return
+    """Install a complete resource tree before considering a digit-only update.
 
+    Args:
+        source: Extracted archive root or user-selected resource directory.
+        result: Installation details accumulated while copying files.
+
+    Raises:
+        ResourceInstallError: Neither complete resources nor a digit update is found,
+            or the complete resource tree has an unsupported theme.
+    """
     try:
         source_static = _find_static_source(source)
     except ResourceInstallError:
+        rating_update = _find_rating_digit_update(source)
         if rating_update:
             _copy_rating_digit_update(rating_update, result)
             return
@@ -297,7 +310,9 @@ def _deduplicate_candidates(candidates: List[Path]) -> List[Path]:
 def _find_local_candidates(path: Path) -> List[Path]:
     if path.is_file():
         if path.suffix.lower() != ".7z":
-            raise ResourceInstallError(f"本地资源不可用：{_display_path(path)} 不是 .7z 资源包")
+            raise ResourceInstallError(
+                f"本地资源不可用：{_display_path(path)} 不是 .7z 资源包"
+            )
         return [path]
 
     if not path.is_dir():
@@ -312,7 +327,8 @@ def _find_local_candidates(path: Path) -> List[Path]:
         return [path]
 
     candidates = [
-        p for p in path.iterdir()
+        p
+        for p in path.iterdir()
         if p.is_dir() or (p.is_file() and p.suffix.lower() == ".7z")
     ]
     candidates = _deduplicate_candidates(candidates)
@@ -329,11 +345,14 @@ def _find_local_candidates(path: Path) -> List[Path]:
             except ResourceInstallError:
                 pass
             if _is_rating_digit_update(candidate) or (
-                "update" in candidate.name.lower() and _find_rating_digit_update(candidate)
+                "update" in candidate.name.lower()
+                and _find_rating_digit_update(candidate)
             ):
                 valid_candidates.append(candidate)
 
-    valid_candidates.sort(key=lambda p: (1 if _looks_like_update(p) else 0, p.name.lower()))
+    valid_candidates.sort(
+        key=lambda p: (1 if _looks_like_update(p) else 0, p.name.lower())
+    )
     return valid_candidates
 
 
@@ -342,7 +361,9 @@ async def _download_file(url: str, target: Path) -> None:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url) as response:
             if response.status != 200:
-                raise ResourceInstallError(f"下载资源失败，HTTP 状态码：{response.status}")
+                raise ResourceInstallError(
+                    f"下载资源失败，HTTP 状态码：{response.status}"
+                )
             async with aiofiles.open(target, "wb") as f:
                 async for chunk in response.content.iter_chunked(1024 * 1024):
                     if chunk:
@@ -356,7 +377,9 @@ def check_resource_status() -> ResourceStatus:
         if not path.exists():
             status.missing_paths.append(_resource_path(path))
 
-    missing_digits = [name for name in RATING_DIGIT_NAMES if not (maimaidir / name).exists()]
+    missing_digits = [
+        name for name in RATING_DIGIT_NAMES if not (maimaidir / name).exists()
+    ]
     if missing_digits:
         status.warnings.append(
             "缺少 rating 数字素材："
@@ -388,7 +411,9 @@ async def install_maimai_resources(
     if resolved_local and resolved_local.exists():
         candidates = _find_local_candidates(resolved_local)
         if not candidates:
-            raise ResourceInstallError(f"本地资源不可用：{_display_path(resolved_local)} 中未找到可识别的资源包")
+            raise ResourceInstallError(
+                f"本地资源不可用：{_display_path(resolved_local)} 中未找到可识别的资源包"
+            )
 
         for candidate in candidates:
             result.source_paths.append(_display_path(candidate))
