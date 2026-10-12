@@ -5,7 +5,7 @@
 
 基于 [AstrBot](https://astrbot.app) 框架的街机音游 **舞萌DX** 查分插件。
 
-当前版本：**v1.8.0**。更新内容见 [CHANGELOG](CHANGELOG.md)。
+当前版本：**v1.8.1**。更新内容见 [CHANGELOG](CHANGELOG.md)。
 
 本插件移植自 [Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX)，其命令语义可参考 [Diving-Fish/mai-bot](https://github.com/Diving-Fish/mai-bot)。当前主要服务国服环境，绘图资源按国服 PRiSM PLUS 资源结构适配。
 
