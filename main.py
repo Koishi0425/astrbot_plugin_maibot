@@ -43,7 +43,7 @@ def _config_bool(config: dict, key: str, default: bool) -> bool:
     return bool(value)
 
 
-@register("astrbot_plugin_maibot", "ZhiheZier", "maimaiDX插件", "1.6.0")
+@register("astrbot_plugin_maibot", "Glmg", "舞萌DX国服查分与图片识分插件", "1.7.0")
 class MaimaiDXPlugin(Star):
     async def terminate(self):
         """Stop background notifications and schedules on plugin unload."""
