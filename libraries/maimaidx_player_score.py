@@ -1,11 +1,14 @@
 import random
 import time
 import traceback
+import tempfile
 from collections import defaultdict
+from pathlib import Path
 from typing import Callable, DefaultDict, Dict, List, Optional, Tuple, Union
 
 import pyecharts.options as opts
 from pyecharts.charts import Pie
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from .. import *
 from .image import *
@@ -35,7 +38,7 @@ def _progress_rows(count: int, columns: int) -> int:
 async def music_global_data(music: Music, level_index: int) -> MessageSegment:
     """
     绘制曲目游玩详情
-    
+
     Params:
         `music`: :class:Music
         `level_index`: 难度
@@ -43,12 +46,20 @@ async def music_global_data(music: Music, level_index: int) -> MessageSegment:
         `MessageSegment`
     """
     stats = music.stats[level_index]
-    fc_data_pair = [list(z) for z in zip([c.upper() if c else 'Not FC' for c in [''] + comboRank], stats.fc_dist)]
+    fc_data_pair = [
+        list(z)
+        for z in zip(
+            [c.upper() if c else "Not FC" for c in [""] + comboRank], stats.fc_dist
+        )
+    ]
     acc_data_pair = [list(z) for z in zip([s.upper() for s in scoreRank], stats.dist)]
 
     initopts = opts.InitOpts(
-        width='1000px', height='800px', bg_color='#fff',
-        js_host=static.resolve().as_uri() + '/',
+        width="1000px",
+        height="800px",
+        bg_color="#fff",
+        js_host=static.resolve().as_uri() + "/",
+        animation_opts=opts.AnimationOpts(animation=False),
     )
     labelopts = opts.LabelOpts(
         position="outside",
@@ -82,20 +93,36 @@ async def music_global_data(music: Music, level_index: int) -> MessageSegment:
         },
     )
     titleopts = opts.TitleOpts(
-        title=f'{music.id} {music.title} 「{diffs[level_index]}」',
-        pos_left='center',
-        pos_top='20',
-        title_textstyle_opts=opts.TextStyleOpts(color='#2c343c'),
+        title=f"{music.id} {music.title} 「{diffs[level_index]}」",
+        pos_left="center",
+        pos_top="20",
+        title_textstyle_opts=opts.TextStyleOpts(color="#2c343c"),
     )
-    legendopts = opts.LegendOpts(pos_left=15, pos_top=10, orient='vertical')
+    legendopts = opts.LegendOpts(pos_left=15, pos_top=10, orient="vertical")
 
     pie = Pie(initopts)
-    pie.add('全连等级', fc_data_pair, radius=[0, '30%'], label_opts=labelopts)
-    pie.add('达成率等级', acc_data_pair, radius=['50%', '70%'], is_clockwise=True, label_opts=labelopts)
+    pie.add("全连等级", fc_data_pair, radius=[0, "30%"], label_opts=labelopts)
+    pie.add(
+        "达成率等级",
+        acc_data_pair,
+        radius=["50%", "70%"],
+        is_clockwise=True,
+        label_opts=labelopts,
+    )
     pie.set_global_opts(title_opts=titleopts, legend_opts=legendopts)
-    pie.set_series_opts(tooltip_opts=opts.TooltipOpts(trigger='item', formatter='{a} <br/>{b}: {c} ({d}%)'))
-    pie.render(str(pie_html_file))
-    base64 = await run_chrome_to_base64()
+    pie.set_series_opts(
+        tooltip_opts=opts.TooltipOpts(
+            trigger="item", formatter="{a} <br/>{b}: {c} ({d}%)"
+        )
+    )
+    temporary_root = Path(get_astrbot_temp_path())
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="maibot-chart-", dir=temporary_root
+    ) as directory:
+        html_file = Path(directory) / "chart.html"
+        pie.render(str(html_file))
+        base64 = await run_chrome_to_base64(html_file)
 
     return MessageSegment.image(base64)
 

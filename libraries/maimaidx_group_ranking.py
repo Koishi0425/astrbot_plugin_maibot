@@ -1,5 +1,4 @@
 import asyncio
-import json
 import math
 import time
 from dataclasses import dataclass
@@ -8,7 +7,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-import aiofiles
 from PIL import Image, ImageDraw, ImageFont
 
 from .. import SIYUAN, TBFONT, diffs, fcl, fsl, get_botname, group_rating_file, log, maimaidir, score_Rank_l, themepicdir
@@ -16,6 +14,7 @@ from .image import music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_identity import get_identity_key, resolve_sender_qq
 from .maimaidx_model import Music, PlayInfoDefault, PlayInfoDev, UserInfo
+from .maimaidx_storage import read_json, write_json
 
 
 PAGE_SIZE = 10
@@ -65,22 +64,11 @@ class GroupSongRankEntry:
 async def _load_store() -> Dict[str, Dict[str, dict]]:
     if not group_rating_file.exists():
         return {}
-    try:
-        async with aiofiles.open(group_rating_file, "r", encoding="utf-8") as file:
-            content = await file.read()
-        data = json.loads(content) if content.strip() else {}
-        return data if isinstance(data, dict) else {}
-    except Exception as exc:
-        log.warning(f"读取群 Rating 榜数据失败: {exc}")
-        return {}
+    return await asyncio.to_thread(read_json, group_rating_file, dict)
 
 
 async def _save_store(data: Dict[str, Dict[str, dict]]) -> None:
-    group_rating_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = group_rating_file.with_suffix(".tmp")
-    async with aiofiles.open(temp_path, "w", encoding="utf-8") as file:
-        await file.write(json.dumps(data, ensure_ascii=False, indent=2))
-    await asyncio.to_thread(temp_path.replace, group_rating_file)
+    await asyncio.to_thread(write_json, group_rating_file, data)
 
 
 async def _event_display_name(event) -> str:

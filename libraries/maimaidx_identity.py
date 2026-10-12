@@ -1,14 +1,13 @@
 import asyncio
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-import aiofiles
 from astrbot.api.event import AstrMessageEvent
 
-from .. import log, user_qq_bindings_file
+from .. import user_qq_bindings_file
+from .maimaidx_storage import CorruptDataError, read_json, write_json
 
 _QQ_PATTERN = re.compile(r"^[1-9][0-9]{4,11}$")
 _BINDINGS_LOCK = asyncio.Lock()
@@ -60,22 +59,11 @@ def get_identity_key(event: AstrMessageEvent, user_id=None) -> str:
 async def _load_bindings() -> Dict[str, dict]:
     if not user_qq_bindings_file.exists():
         return {}
-    try:
-        async with aiofiles.open(user_qq_bindings_file, "r", encoding="utf-8") as f:
-            content = await f.read()
-        if not content.strip():
-            return {}
-        data = json.loads(content)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        log.warning(f"读取QQ绑定文件失败: {e}")
-        return {}
+    return await asyncio.to_thread(read_json, user_qq_bindings_file, dict)
 
 
 async def _save_bindings(bindings: Dict[str, dict]) -> None:
-    user_qq_bindings_file.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(user_qq_bindings_file, "w", encoding="utf-8") as f:
-        await f.write(json.dumps(bindings, ensure_ascii=False, indent=4))
+    await asyncio.to_thread(write_json, user_qq_bindings_file, bindings)
 
 
 async def bind_event_qq(event: AstrMessageEvent, qq: str) -> None:
@@ -158,9 +146,14 @@ def extract_at_user_id(event: AstrMessageEvent) -> Optional[str]:
     return None
 
 
-async def resolve_user_qq(event: AstrMessageEvent, user_id=None, target: str = "你") -> MaimaiIdentity:
+async def resolve_user_qq(
+    event: AstrMessageEvent, user_id=None, target: str = "你"
+) -> MaimaiIdentity:
     raw_id = str(user_id if user_id is not None else event.get_sender_id())
-    bound = await get_bound_qq(event, raw_id)
+    try:
+        bound = await get_bound_qq(event, raw_id)
+    except (CorruptDataError, OSError) as exc:
+        return MaimaiIdentity(error=str(exc))
     if bound:
         return MaimaiIdentity(qqid=bound)
     # 非 QQ 平台的用户 ID 也经常是纯数字。优先使用显式绑定，

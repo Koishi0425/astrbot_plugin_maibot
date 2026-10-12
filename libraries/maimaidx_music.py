@@ -1,20 +1,26 @@
 import asyncio
-import json
 import random
-import traceback
 from collections import Counter, defaultdict
 from copy import deepcopy
 from typing import List, Tuple
 
 import numpy as np
+from aiohttp import ClientError
 from PIL import Image
 
 from .. import *
 from .image import image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import *
+from .maimaidx_error import ServerError, UnknownError
 from .maimaidx_model import *
+from .maimaidx_model import Music, Stats, Alias, GuessSwitch, AliasesPush
+from .. import data_dir, music_file, chart_file, alias_file, local_alias_file, guess_file, group_alias_file, log
 from .tool import openfile, writefile
+from .maimaidx_storage import read_json, preserve_corrupt
+
+_FETCH_ERRORS = (ClientError, asyncio.TimeoutError, ServerError, UnknownError, ValueError, TypeError, KeyError)
+_GROUP_SETTINGS_LOCK = asyncio.Lock()
 
 
 def cross(
@@ -238,79 +244,124 @@ aliaserror = dedent(f'''
 
 
 async def get_music_list() -> MusicList:
-    """获取所有数据"""
-    # MusicData
+    """Load validated public catalogs, falling back to cached data on service failures.
+
+    Returns:
+        Available songs, with optional chart statistics.
+
+    Raises:
+        OSError: No readable music catalog is available.
+        ValueError: Neither the response nor the cached music catalog is valid.
+    """
     try:
-        try: 
-            music_data = await maiApi.music_data()
-            await writefile(music_file, music_data)
-        except asyncio.exceptions.TimeoutError:
-            log.error('maimaiDX曲库数据获取失败，请检查网络环境。已切换至本地暂存文件')
-            music_data = await openfile(music_file)
-    except FileNotFoundError:
-        log.error(dataerror)
-        raise FileNotFoundError
-    
-    # ChartStats
-    try:
+        music_data = await maiApi.music_data()
+        if not isinstance(music_data, list) or not music_data:
+            raise ValueError("Empty or invalid music catalog")
+        total_list = MusicList(Music.model_validate(item) for item in music_data)
+    except _FETCH_ERRORS:
+        log.warning("Music service unavailable; loading cached catalog")
+        music_data = await openfile(music_file)
+        if not isinstance(music_data, list) or not music_data:
+            raise ValueError("No valid cached music catalog")
+        total_list = MusicList(Music.model_validate(item) for item in music_data)
+    else:
         try:
-            chart_stats = await maiApi.chart_stats()
-            await writefile(chart_file, chart_stats)
-        except asyncio.exceptions.TimeoutError:
-            log.error('maimaiDX数据获取错误，请检查网络环境，已切换至本地暂存文件')
+            await writefile(music_file, music_data, protect_corrupt=False)
+        except OSError:
+            log.exception("Unable to save the fresh music cache")
+
+    try:
+        chart_stats = await maiApi.chart_stats()
+        if not isinstance(chart_stats, dict) or not isinstance(
+            chart_stats.get("charts"), dict
+        ):
+            raise ValueError("Invalid chart statistics")
+        for values in chart_stats["charts"].values():
+            if not isinstance(values, list):
+                raise ValueError("Invalid chart statistics row")
+            for value in values:
+                if value:
+                    Stats.model_validate(value)
+    except _FETCH_ERRORS:
+        log.warning("Chart statistics service unavailable; loading cached statistics")
+        try:
             chart_stats = await openfile(chart_file)
-    except FileNotFoundError:
-        log.error(charterror)
-        raise FileNotFoundError
-
-    total_list = MusicList()
-    for music in music_data:
-        if music['id'] in chart_stats['charts']:
-            _stats = [
-                _data if _data else None
-                for _data in chart_stats['charts'][music['id']]
-            ] if {} in chart_stats['charts'][music['id']] else \
-            chart_stats['charts'][music['id']]
-        else:
-            _stats = None
-        total_list.append(Music(stats=_stats, **music))
-
+        except (OSError, ValueError):
+            chart_stats = {"charts": {}}
+            log.warning(
+                "Chart statistics unavailable; basic song queries remain usable"
+            )
+    else:
+        try:
+            await writefile(chart_file, chart_stats, protect_corrupt=False)
+        except OSError:
+            log.exception("Unable to save the fresh chart statistics cache")
+    if not isinstance(chart_stats, dict) or not isinstance(
+        chart_stats.get("charts"), dict
+    ):
+        if chart_file.exists():
+            preserve_corrupt(chart_file)
+        chart_stats = {"charts": {}}
+    for music in total_list:
+        values = chart_stats.get("charts", {}).get(music.id, [])
+        try:
+            music.stats = [
+                Stats.model_validate(value) if value else None for value in values
+            ]
+        except (ValueError, TypeError):
+            music.stats = []
+            log.warning(
+                "Ignoring invalid cached chart statistics for song %s", music.id
+            )
     return total_list
 
 
 async def get_music_alias_list() -> AliasList:
-    """获取所有别名"""
-    if local_alias_file.exists():
-        local_alias_data = await openfile(local_alias_file)
-    else:
-        local_alias_data = {}
-    alias_data: List[Dict[str, Union[int, str, List[str]]]] = []
+    """Load remote or cached aliases and retain locally configured song aliases.
+
+    Returns:
+        Available aliases, including song titles when no remote data is available.
+    """
+    local_alias_data = {}
+    try:
+        if local_alias_file.exists():
+            local_alias_data = await asyncio.to_thread(
+                read_json, local_alias_file, dict
+            )
+    except (OSError, ValueError):
+        log.exception("Local alias settings are unreadable and have been preserved")
     try:
         alias_data = await maiApi.get_alias()
-        await writefile(alias_file, alias_data)
-    except asyncio.exceptions.TimeoutError:
-        log.error('获取别名超时。已切换至本地暂存文件')
-        alias_data = await openfile(alias_file)
-        if not alias_data:
-            log.error(aliaserror)
-            raise ValueError
-    except ServerError as e:
-        log.error(e)
-        alias_data = await openfile(alias_file)
-    except UnknownError:
-        log.error('获取所有曲目别名信息错误，请检查网络环境。已切换至本地暂存文件')
-        alias_data = await openfile(alias_file)
-        if not alias_data:
-            log.error(aliaserror)
-            raise ValueError
-
+        if not isinstance(alias_data, list) or not alias_data:
+            raise ValueError("Empty or invalid alias catalog")
+        aliases = [Alias.model_validate(item) for item in alias_data]
+    except _FETCH_ERRORS:
+        log.warning("Alias service unavailable; loading cached aliases")
+        try:
+            aliases = [
+                Alias.model_validate(item) for item in await openfile(alias_file)
+            ]
+        except (OSError, ValueError, TypeError):
+            aliases = []
+            log.warning(
+                "Remote alias cache unavailable; using song titles and local aliases"
+            )
+    else:
+        try:
+            await writefile(alias_file, alias_data, protect_corrupt=False)
+        except OSError:
+            log.exception("Unable to save the fresh alias cache")
+    indexed = {item.SongID: item for item in aliases}
     total_alias_list = AliasList()
-    for _a in filter(lambda x: mai.total_list.by_id(x['SongID']), alias_data):
-        if (song_id := str(_a['SongID'])) in local_alias_data:
-            _a['Alias'].extend(local_alias_data[song_id])
-        _a['Alias'] = list(dict.fromkeys(_a['Alias']))
-        total_alias_list.append(Alias.model_validate(_a))
-
+    for music in mai.total_list:
+        item = indexed.get(int(music.id)) or Alias(
+            SongID=int(music.id), Name=music.title, Alias=[music.title.lower()]
+        )
+        local = local_alias_data.get(music.id, [])
+        if isinstance(local, list):
+            item.Alias.extend(name for name in local if isinstance(name, str))
+        item.Alias = list(dict.fromkeys(item.Alias))
+        total_alias_list.append(item)
     return total_alias_list
 
 
@@ -324,8 +375,8 @@ async def update_local_alias(id: str, alias_name: str) -> bool:
             local_alias_data[id] = []
         
         local_alias_data[id].append(alias_name.lower())
-        mai.total_alias_list.by_id(id)[0].Alias.append(alias_name.lower())
         await writefile(local_alias_file, local_alias_data)
+        mai.total_alias_list.by_id(id)[0].Alias.append(alias_name.lower())
         return True
     except Exception as e:
         log.error(f'添加本地别名失败: {e}')
@@ -348,7 +399,13 @@ class MaiMusic:
     """猜歌数据"""
 
     def __init__(self) -> None:
-        """封装所有曲目信息以及猜歌数据，便于更新"""
+        """Keep usable empty catalogs before the first successful data refresh."""
+        self.total_list = MusicList()
+        self.total_alias_list = AliasList()
+        self.total_plate_id_list = {}
+        self.total_level_data = {}
+        self.hot_music_ids = []
+        self.guess_data = []
 
     async def get_music(self) -> None:
         """获取所有曲目数据"""
@@ -358,13 +415,34 @@ class MaiMusic:
     async def get_music_alias(self) -> None:
         """获取所有曲目别名"""
         self.total_alias_list = await get_music_alias_list()
-        
+
     async def get_plate_json(self) -> None:
-        """获取所有牌子数据"""
-        self.total_plate_id_list = await maiApi.get_plate_json()
+        """Load public plate IDs, preserving cached IDs when the service is offline."""
+        cache = data_dir / "music_plate.json"
+        try:
+            payload = await maiApi.get_plate_json()
+            if not isinstance(payload, dict) or any(
+                not isinstance(ids, list)
+                or any(not isinstance(value, int) for value in ids)
+                for ids in payload.values()
+            ):
+                raise ValueError("Invalid plate catalog")
+        except _FETCH_ERRORS:
+            log.warning("Plate service unavailable; retaining cached plate IDs")
+            if cache.exists():
+                self.total_plate_id_list = await asyncio.to_thread(
+                    read_json, cache, dict
+                )
+            return
+        self.total_plate_id_list = payload
+        try:
+            await writefile(cache, payload, protect_corrupt=False)
+        except OSError:
+            log.exception("Unable to save the fresh plate cache")
 
     def guess(self):
         """初始化猜歌数据"""
+        self.hot_music_ids = []
         for music in self.total_list:
             if music.stats:
                 count = 0
@@ -373,7 +451,9 @@ class MaiMusic:
                         count += stats.cnt if stats.cnt else 0
                 if count > 10000:
                     self.hot_music_ids.append(music.id)
-        self.guess_data = list(filter(lambda x: x.id in self.hot_music_ids, self.total_list))
+        self.guess_data = list(
+            filter(lambda x: x.id in self.hot_music_ids, self.total_list)
+        )
 
 
 mai = MaiMusic()
@@ -385,23 +465,27 @@ class Guess:
     switch: GuessSwitch
 
     def __init__(self) -> None:
-        """猜歌类"""
-        if not guess_file.exists():
-            self.switch = GuessSwitch()
-        else:
-            self.switch = GuessSwitch.model_validate(
-                json.load(open(guess_file, 'r', encoding='utf-8'))
-            )
-            # 清理数据，确保 enable 和 disable 列表中的值都是字符串类型（兼容旧数据，自动转换）
+        """Load group controls without allowing damaged settings to stop imports."""
+        self.switch = GuessSwitch()
+        self.storage_available = True
+        try:
+            if guess_file.exists():
+                payload = read_json(guess_file, dict)
+                for field in ("enable", "disable"):
+                    if isinstance(payload.get(field), list):
+                        payload[field] = [
+                            str(value) for value in payload[field] if value is not None
+                        ]
+                self.switch = GuessSwitch.model_validate(payload)
+        except (OSError, ValueError):
+            self.storage_available = False
             try:
-                self.switch.enable = [str(x) for x in self.switch.enable if x is not None]
-            except (ValueError, TypeError):
-                self.switch.enable = []
-            try:
-                self.switch.disable = [str(x) for x in self.switch.disable if x is not None]
-            except (ValueError, TypeError):
-                self.switch.disable = []
-    
+                if guess_file.exists():
+                    preserve_corrupt(guess_file)
+            except OSError:
+                log.warning("Unable to create a guess settings backup")
+            log.exception("Guess settings unavailable; group games remain disabled")
+
     def start(self, group_id: str):
         """开始猜歌"""
         self.Group[group_id] = self.guessData()
@@ -511,30 +595,53 @@ class Guess:
             del self.Group[group_id]
 
     async def on(self, group_id: str) -> str:
-        """开启猜歌"""
-        # group_id 在 AstrBotMessage 中已经是字符串，直接使用
-        # 清理 enable 列表，确保所有值都是字符串类型（兼容旧数据）
-        self.switch.enable = [str(x) for x in self.switch.enable if x is not None]
-        if group_id not in self.switch.enable:
-            self.switch.enable.append(group_id)
-        # 清理 disable 列表，确保所有值都是字符串类型
-        self.switch.disable = [str(x) for x in self.switch.disable if x is not None]
-        if group_id in self.switch.disable:
-            self.switch.disable.remove(group_id)
-        await writefile(guess_file, self.switch.model_dump())
-        return '群猜歌功能已开启'
+        """Persist the requested group enablement before changing active settings.
+
+        Args:
+            group_id: Group identifier.
+
+        Returns:
+            Confirmation or recovery instructions.
+        """
+        if not self.storage_available:
+            return "猜歌群设置损坏，请管理员恢复 group_guess_switch.json 后重启插件。"
+        async with _GROUP_SETTINGS_LOCK:
+            proposed = self.switch.model_copy(deep=True)
+            if group_id not in proposed.enable:
+                proposed.enable.append(group_id)
+            if group_id in proposed.disable:
+                proposed.disable.remove(group_id)
+            try:
+                await writefile(guess_file, proposed.model_dump())
+            except (ValueError, OSError) as exc:
+                return f"群设置保存失败，未修改猜歌状态：{exc}"
+            self.switch = proposed
+        return "群猜歌功能已开启"
 
     async def off(self, group_id: str) -> str:
-        """关闭猜歌"""
-        # group_id 在 AstrBotMessage 中已经是字符串，直接使用
-        if group_id not in self.switch.disable:
-            self.switch.disable.append(group_id)
-        if group_id in self.switch.enable:
-            self.switch.enable.remove(group_id)
-        if group_id in self.Group:
+        """Persist group disablement before stopping its active game.
+
+        Args:
+            group_id: Group identifier.
+
+        Returns:
+            Confirmation or recovery instructions.
+        """
+        if not self.storage_available:
+            return "猜歌群设置损坏，请管理员恢复 group_guess_switch.json 后重启插件。"
+        async with _GROUP_SETTINGS_LOCK:
+            proposed = self.switch.model_copy(deep=True)
+            if group_id not in proposed.disable:
+                proposed.disable.append(group_id)
+            if group_id in proposed.enable:
+                proposed.enable.remove(group_id)
+            try:
+                await writefile(guess_file, proposed.model_dump())
+            except (ValueError, OSError) as exc:
+                return f"群设置保存失败，未修改猜歌状态：{exc}"
+            self.switch = proposed
             self.end(group_id)
-        await writefile(guess_file, self.switch.model_dump())
-        return '群猜歌功能已关闭'
+        return "群猜歌功能已关闭"
 
 
 guess = Guess()
@@ -550,53 +657,97 @@ class GroupAlias:
         return [str(x) for x in ids if x is not None]
 
     def __init__(self) -> None:
-        """别名推送类"""
-        if not group_alias_file.exists():
-            self.push = AliasesPush()
-        else:
-            self.push = AliasesPush.model_validate(
-                json.load(open(group_alias_file, 'r', encoding='utf-8'))
-            )
-        # 兼容旧数据：JSON 中可能存成数字，与推送处 str(gid) 比较会永远不匹配
-        self.push.enable = self._normalize_group_ids(self.push.enable)
-        self.push.disable = self._normalize_group_ids(self.push.disable)
+        """Load notification restrictions, disabling broadcasts on damaged settings."""
+        self.push = AliasesPush()
+        self.storage_available = True
+        try:
+            if group_alias_file.exists():
+                payload = read_json(group_alias_file, dict)
+                for field in ("enable", "disable"):
+                    if isinstance(payload.get(field), list):
+                        payload[field] = self._normalize_group_ids(payload[field])
+                self.push = AliasesPush.model_validate(payload)
+        except (OSError, ValueError):
+            self.storage_available = False
+            try:
+                if group_alias_file.exists():
+                    preserve_corrupt(group_alias_file)
+            except OSError:
+                log.warning("Unable to create an alias settings backup")
+            log.exception("Alias settings unavailable; broadcasts remain disabled")
 
     async def on(self, gid: str) -> str:
-        """开启推送"""
+        """Persist notification enablement before applying the group change.
+
+        Args:
+            gid: Group identifier.
+
+        Returns:
+            Confirmation or recovery instructions.
+        """
+        if not self.storage_available:
+            return "别名群设置损坏，请管理员恢复 group_alias_switch.json 后重启插件。"
         gid = str(gid)
-        self.push.enable = self._normalize_group_ids(self.push.enable)
-        self.push.disable = self._normalize_group_ids(self.push.disable)
-        if gid not in self.push.enable:
-            self.push.enable.append(gid)
-        if gid in self.push.disable:
-            self.push.disable.remove(gid)
-        await writefile(group_alias_file, self.push.model_dump())
-        return '群别名推送功能已开启'
+        async with _GROUP_SETTINGS_LOCK:
+            proposed = self.push.model_copy(deep=True)
+            if gid not in proposed.enable:
+                proposed.enable.append(gid)
+            if gid in proposed.disable:
+                proposed.disable.remove(gid)
+            try:
+                await writefile(group_alias_file, proposed.model_dump())
+            except (ValueError, OSError) as exc:
+                return f"群设置保存失败，未修改推送状态：{exc}"
+            self.push = proposed
+        return "群别名推送功能已开启"
 
     async def off(self, gid: str) -> str:
-        """关闭推送"""
+        """Persist notification disablement before applying the group change.
+
+        Args:
+            gid: Group identifier.
+
+        Returns:
+            Confirmation or recovery instructions.
+        """
+        if not self.storage_available:
+            return "别名群设置损坏，请管理员恢复 group_alias_switch.json 后重启插件。"
         gid = str(gid)
-        self.push.enable = self._normalize_group_ids(self.push.enable)
-        self.push.disable = self._normalize_group_ids(self.push.disable)
-        if gid not in self.push.disable:
-            self.push.disable.append(gid)
-        if gid in self.push.enable:
-            self.push.enable.remove(gid)
-        await writefile(group_alias_file, self.push.model_dump())
-        return '群别名推送功能已关闭'
+        async with _GROUP_SETTINGS_LOCK:
+            proposed = self.push.model_copy(deep=True)
+            if gid not in proposed.disable:
+                proposed.disable.append(gid)
+            if gid in proposed.enable:
+                proposed.enable.remove(gid)
+            try:
+                await writefile(group_alias_file, proposed.model_dump())
+            except (ValueError, OSError) as exc:
+                return f"群设置保存失败，未修改推送状态：{exc}"
+            self.push = proposed
+        return "群别名推送功能已关闭"
 
     async def alias_global_change(self, switch: bool, group_list: List[str]):
-        """修改全局开关"""
-        group_list = self._normalize_group_ids(group_list)
-        if switch:
-            self.push.disable.clear()
-            self.push.enable.clear()
-            self.push.enable.extend(group_list)
-        else:
-            self.push.enable.clear()
-            self.push.disable.clear()
-            self.push.disable.extend(group_list)
-        await writefile(group_alias_file, self.push.model_dump())
+        """Persist a global notification change before updating active restrictions.
+
+        Args:
+            switch: Whether the listed groups should receive notifications.
+            group_list: Group identifiers.
+
+        Raises:
+            ValueError: Existing group settings need administrator recovery.
+            OSError: The change cannot be saved.
+        """
+        if not self.storage_available:
+            raise ValueError(
+                "Restore group_alias_switch.json before changing notifications"
+            )
+        async with _GROUP_SETTINGS_LOCK:
+            groups = self._normalize_group_ids(group_list)
+            proposed = AliasesPush(
+                enable=groups if switch else [], disable=[] if switch else groups
+            )
+            await writefile(group_alias_file, proposed.model_dump())
+            self.push = proposed
 
 
 alias = GroupAlias()

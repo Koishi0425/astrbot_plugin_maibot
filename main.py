@@ -6,7 +6,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import asyncio
 import traceback
-import json
 import re
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from . import Root, log, loga, ratingdir, platedir, plate_to_dx_version, platecn
 from .libraries.maimai_best_50 import ScoreBaseImage
 from .libraries.maimaidx_api_data import MaiConfig, maiApi
 from .libraries.maimaidx_music import mai
+from .libraries.maimaidx_storage import read_json, write_json, preserve_corrupt
 from .command.mai_alias import sse_alias_server
 import sys
 
@@ -64,6 +64,7 @@ class MaimaiDXPlugin(Star):
 
         # 群组启用状态（存储禁用的群组ID）
         self.disabled_groups = set()  # 禁用插件的群组ID集合
+        self.group_settings_available = False
         self.data_file = data_dir / "disabled_groups.json"
         self.score_recognizer = None
         self.score_ocr_lock = asyncio.Lock()
@@ -132,67 +133,80 @@ class MaimaiDXPlugin(Star):
             log.warning('未找到任何管理员ID，某些需要管理员权限的命令可能无法使用')
 
     async def initialize(self):
-        """插件初始化，加载数据并设置定时任务"""
+        """Initialize independent features and always register recovery schedules."""
+        for setup in (self._load_disabled_groups, self._setup_configuration):
+            try:
+                setup()
+            except Exception:
+                log.exception("Plugin setup stage failed: %s", setup.__name__)
         try:
-            # 加载禁用群组列表
-            self._load_disabled_groups()
-            
-            # 设置配置
-            self._setup_configuration()
-            
-            # 加载maimai数据
             await self._load_maimai_data()
-            
-            # 加载机厅数据
-            if maiApi.config.arcade_enabled:
+        except Exception:
+            log.exception(
+                "Music initialization failed; available cached data is retained"
+            )
+        if maiApi.config.arcade_enabled:
+            try:
                 await self._load_arcade_data()
-            else:
-                loga.info('机厅排卡功能未启用，跳过机厅数据初始化')
-            
-            # 加载图片到内存（如果配置了）
-            self._load_images_to_memory()
-            
-            # 执行初始检查
-            self._perform_initial_checks()
-            
-            # 设置定时任务
-            self._setup_schedulers()
-            
-            log.info('maimaiDX插件初始化完成')
-            log.info('命令注册完成，等待用户输入...')
-        except Exception as e:
-            log.error(f'插件初始化失败: {e}')
-            log.error(traceback.format_exc())
-            log.warning('初始化失败，但继续加载插件，部分功能可能不可用')
+            except Exception:
+                log.exception("Arcade initialization failed")
+        for setup in (
+            self._load_images_to_memory,
+            self._perform_initial_checks,
+            self._setup_schedulers,
+        ):
+            try:
+                setup()
+            except Exception:
+                log.exception("Plugin setup stage failed: %s", setup.__name__)
+        log.info("Maimai plugin initialization completed")
 
     def _load_disabled_groups(self):
-        """加载禁用群组列表"""
+        """Load group restrictions and block group commands if recovery is needed."""
+        self.group_settings_available = False
         try:
             if self.data_file.exists():
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.disabled_groups = set(data.get('disabled_groups', []))
-                log.info(f'已加载禁用群组列表，共 {len(self.disabled_groups)} 个群组')
+                data = read_json(self.data_file, dict)
+                groups = data.get("disabled_groups")
+                if not isinstance(groups, list) or any(
+                    not isinstance(group, (str, int)) for group in groups
+                ):
+                    preserve_corrupt(self.data_file)
+                    raise ValueError(
+                        "Invalid disabled group settings; restore the preserved backup"
+                    )
+                self.disabled_groups = {str(group) for group in groups}
             else:
-                log.info('禁用群组列表文件不存在，创建新文件')
                 self._save_disabled_groups()
-        except Exception as e:
-            log.error(f'加载禁用群组列表失败: {e}')
-            self.disabled_groups = set()
-    
-    def _save_disabled_groups(self):
-        """保存禁用群组列表"""
-        try:
-            data = {'disabled_groups': list(self.disabled_groups)}
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            log.info('禁用群组列表已保存')
-        except Exception as e:
-            log.error(f'保存禁用群组列表失败: {e}')
-    
+            self.group_settings_available = True
+        except (ValueError, OSError):
+            log.exception("Group settings unavailable; group commands remain disabled")
+
+    def _save_disabled_groups(self, groups: set | None = None):
+        """Atomically persist a group restriction change before applying it.
+
+        Args:
+            groups: Proposed restrictions, or the current restrictions when None.
+        """
+        write_json(
+            self.data_file,
+            {
+                "disabled_groups": sorted(
+                    self.disabled_groups if groups is None else groups
+                )
+            },
+        )
+
     def _is_group_enabled(self, group_id: str) -> bool:
-        """检查群组是否启用插件"""
-        return group_id not in self.disabled_groups
+        """Check group restrictions after a successful settings load.
+
+        Args:
+            group_id: Group identifier.
+
+        Returns:
+            Whether group commands are allowed.
+        """
+        return self.group_settings_available and group_id not in self.disabled_groups
 
     def _setup_configuration(self):
         """处理配置相关的初始化"""
@@ -213,29 +227,13 @@ class MaimaiDXPlugin(Star):
         loga.info(f'机厅排卡为「{"开启" if maiApi.config.arcade_enabled else "关闭"}」状态')
 
     async def _load_maimai_data(self):
-        """负责加载所有maimai相关数据（歌曲、别名等）"""
-        try:
-            log.info('正在获取maimai所有曲目信息')
-            await mai.get_music()
-            log.info(f'歌曲数据获取完成，数量: {len(mai.total_list) if hasattr(mai, "total_list") and mai.total_list else 0}')
-            
-            log.info('正在获取maimai牌子数据')
-            await mai.get_plate_json()
-            log.info('牌子数据获取完成')
-            
-            log.info('正在获取maimai所有曲目别名信息')
-            await mai.get_music_alias()
-            log.info(f'别名数据获取完成，数量: {len(mai.total_alias_list) if hasattr(mai, "total_alias_list") and mai.total_alias_list else 0}')
-            
-            log.info('正在初始化猜歌数据')
-            mai.guess()
-            log.info('猜歌数据初始化完成')
-            
-            log.info('maimai数据获取完成')
-        except Exception as e:
-            log.error(f'加载maimai数据失败: {e}')
-            log.error(traceback.format_exc())
-            raise
+        """Load independent public catalogs without discarding usable data."""
+        for load in (mai.get_music, mai.get_plate_json, mai.get_music_alias):
+            try:
+                await load()
+            except Exception:
+                log.exception("Public catalog initialization failed: %s", load.__name__)
+        mai.guess()
 
     async def _load_arcade_data(self):
         """加载机厅数据"""
@@ -330,14 +328,13 @@ class MaimaiDXPlugin(Star):
             pass
 
     async def _daily_update(self):
-        """定时任务：每日更新数据"""
+        """Refresh independent public catalogs daily, including offline recovery."""
         try:
-            await mai.get_music()
-            mai.guess()
-            log.info('maimaiDX数据更新完毕')
+            await self._load_maimai_data()
+            log.info("Daily public catalog refresh completed")
         except Exception as e:
-            log.error(f'定时更新数据失败: {e}')
-    
+            log.error("Daily public catalog refresh failed: %s", e)
+
     async def _arcade_daily_update(self):
         """机厅数据每日更新 - 每天凌晨3点执行"""
         try:
@@ -355,33 +352,45 @@ class MaimaiDXPlugin(Star):
         # 检查是否为超级管理员
         sender_id = str(event.get_sender_id())
         if sender_id not in self.superusers:
-            yield event.plain_result('仅允许超级管理员执行此操作')
+            yield event.plain_result("仅允许超级管理员执行此操作")
             return
-        
+
         # 检查是否在群聊中
         group_id = event.message_obj.group_id
         if not group_id:
-            yield event.plain_result('此命令仅在群聊中可用')
+            yield event.plain_result("此命令仅在群聊中可用")
             return
-        
+
         gid = str(group_id)
         message_str = event.message_str.strip()
-        
-        if message_str == '开启舞萌功能':
-            if gid in self.disabled_groups:
-                self.disabled_groups.remove(gid)
-                self._save_disabled_groups()
-                yield event.plain_result(f'已开启本群的舞萌功能')
-            else:
-                yield event.plain_result('本群舞萌功能已经是开启状态')
-        elif message_str == '关闭舞萌功能':
-            if gid not in self.disabled_groups:
-                self.disabled_groups.add(gid)
-                self._save_disabled_groups()
-                yield event.plain_result(f'已关闭本群的舞萌功能')
-            else:
-                yield event.plain_result('本群舞萌功能已经是关闭状态')
-    
+
+        if not self.group_settings_available:
+            yield event.plain_result(
+                "群设置读取失败，请管理员恢复 disabled_groups.json 后重启插件。"
+            )
+            return
+        enabled = message_str == "开启舞萌功能"
+        if enabled == (gid not in self.disabled_groups):
+            yield event.plain_result(
+                f"本群舞萌功能已经是{'开启' if enabled else '关闭'}状态"
+            )
+            return
+        groups = self.disabled_groups.copy()
+        if enabled:
+            groups.discard(gid)
+        else:
+            groups.add(gid)
+        try:
+            self._save_disabled_groups(groups)
+        except (ValueError, OSError):
+            log.exception("Failed to persist group restrictions")
+            yield event.plain_result(
+                "群设置保存失败，未修改本群状态，请管理员检查数据文件。"
+            )
+            return
+        self.disabled_groups = groups
+        yield event.plain_result(f"已{'开启' if enabled else '关闭'}本群的舞萌功能")
+
     # 基础命令
     @filter.command("更新maimai数据")
     async def update_data(self, event: AstrMessageEvent):
@@ -462,23 +471,37 @@ class MaimaiDXPlugin(Star):
         async for result in maimaidxhelp_handler(event):
             yield result
 
-    @filter.regex(r"^mai识分\s*$")
+    @filter.regex(
+        r"^mai识分(?:\s+(?:id|ach|diff|dx|round|tap|hold|slide|touch|break)=[\s\S]*)?\s*$"
+    )
     async def mai_score_recognition(self, event: AstrMessageEvent):
-        """Recognize an attached or quoted score image using local OCR.
+        """Recognize a score image or validate editable manual score parameters.
 
         Args:
-            event: Message containing mai识分 and an image or an image reply.
+            event: Score image, image reply or manually completed score command.
 
         Yields:
-            Recognition result or a concise explanation of missing input.
+            Result image or an editable command preserving missing values.
         """
         from astrbot.api.message_components import Image, Reply
         from astrbot.api.star import StarTools
-        from .libraries.maimaidx_score_recognition import ScoreRecognizer
+        from .libraries.maimaidx_score_recognition import (
+            RecognizedScore,
+            ScoreRecognizer,
+        )
+        from .libraries.maimaidx_score_input import parse_manual_score
+        from .libraries.maimaidx_score_image import render_score_image
+        from .command.mai_score_input import score_completion_reply
 
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
+        parameters = (
+            getattr(event, "message_str", "mai识分")
+            .strip()
+            .removeprefix("mai识分")
+            .strip()
+        )
         chain = event.message_obj.message
         images = [part for part in chain if isinstance(part, Image)]
         if not images:
@@ -489,39 +512,70 @@ class MaimaiDXPlugin(Star):
                 for part in (reply.chain or [])
                 if isinstance(part, Image)
             ]
-        if not images:
-            yield event.plain_result(
-                "发送 mai识分 并附上结算图片，或回复图片发送 mai识分。"
-            )
-            return
-        if len(images) > 1:
+        if not parameters and len(images) > 1:
             yield event.plain_result("请每次发送一张结算图片。")
             return
+        score = RecognizedScore("manual")
+        musics = getattr(mai, "total_list", [])
         try:
-            path = Path(await images[0].convert_to_file_path())
-            async with self.score_ocr_lock:
-                if self.score_recognizer is None:
-                    self.score_recognizer = ScoreRecognizer(
-                        StarTools.get_data_dir("astrbot_plugin_maibot") / "ocr"
+            if parameters:
+                score = parse_manual_score(parameters, musics)
+            elif images:
+                path = Path(await images[0].convert_to_file_path())
+                async with self.score_ocr_lock:
+                    if self.score_recognizer is None:
+                        self.score_recognizer = ScoreRecognizer(
+                            StarTools.get_data_dir("astrbot_plugin_maibot") / "ocr"
+                        )
+                    score = await asyncio.to_thread(
+                        self.score_recognizer.recognize,
+                        path,
+                        musics,
                     )
-                score = await asyncio.to_thread(
-                    self.score_recognizer.recognize,
-                    path,
-                    getattr(mai, "total_list", []),
+            analysis = score.analysis
+            if (
+                analysis
+                and analysis.status in ("unique", "ambiguous")
+                and score.music_id
+                and score.title
+                and score.difficulty is not None
+                and score.achievement is not None
+            ):
+                music = next(
+                    (item for item in musics if str(item.id) == score.music_id),
+                    None,
                 )
-            yield event.plain_result(score.format())
+                picture = await asyncio.to_thread(render_score_image, score, music)
+                yield event.chain_result([Image.fromBytes(picture)])
+                return
+            if score.aggregate:
+                reason = "简略结算缺少各键型判定，请发送 Details 详细页，或手动补全。"
+            elif analysis and analysis.reason:
+                reason = analysis.reason
+            elif score.warnings and not score.title:
+                reason = score.warnings[0]
+            elif not score.music_id or score.difficulty is None or not score.title:
+                reason = "请附上结算图片，或补齐歌曲 id、达成率和判定详情；必要时补充 diff=紫。"
+            else:
+                reason = "未识别到完整信息，请手动补全。"
         except ImportError:
             logger.error("Score recognition dependencies are unavailable")
-            yield event.plain_result(
-                "识分依赖未安装，请管理员安装插件 requirements.txt 后重载插件。"
-            )
+            reason = "OCR 识分依赖未安装，请管理员安装 requirements.txt；也可手动填写以下数据。"
         except ValueError as exc:
-            yield event.plain_result(str(exc))
+            reason = str(exc)
+        except OSError:
+            logger.exception("Score image or drawing resources are unavailable")
+            reason = (
+                "判定已识别，但绘图字体不可用，请管理员检查中文字体资源。"
+                if score.rows
+                else "图片或 OCR 模型无法读取，请重新发图或手动补全。"
+            )
         except Exception:
             logger.exception("Score image recognition failed")
-            yield event.plain_result(
-                "识分失败，请重试清晰的完整结算图片；首次使用需要下载 OCR 模型。"
-            )
+            reason = "识分失败，可重新发送清晰的完整结算图片，或手动补全以下指令。"
+        reply = await score_completion_reply(event, score, reason)
+        if reply is not None:
+            yield reply
 
     @filter.regex(r"^(今日mai|今日舞萌|今日运势)$")
     async def mai_today(self, event: AstrMessageEvent):
@@ -530,6 +584,7 @@ class MaimaiDXPlugin(Star):
         if group_id and not self._is_group_enabled(str(group_id)):
             return
         from .command.mai_base import mai_today_handler
+
         async for result in mai_today_handler(event):
             yield result
 
@@ -581,11 +636,18 @@ class MaimaiDXPlugin(Star):
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):
             return
-        if group_id and event.message_str.strip().lower() == 'b50':
+        if group_id and event.message_str.strip().lower() == "b50":
             from .libraries.maimaidx_group_ranking import enroll_group_rating_user
-            await enroll_group_rating_user(event, silent=True)
-        
+
+            try:
+                await enroll_group_rating_user(event, silent=True)
+            except (ValueError, OSError):
+                log.exception(
+                    "Unable to update group membership; continuing the score query"
+                )
+
         from .command.mai_score import best50_handler
+
         async for result in best50_handler(event):
             yield result
 

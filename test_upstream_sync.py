@@ -116,8 +116,8 @@ class UpstreamSyncTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(
                 music,
-                "openfile",
-                new=AsyncMock(return_value={"11167": ["test", "local"]}),
+                "read_json",
+                return_value={"11167": ["test", "local"]},
             ),
             patch.object(music, "writefile", new=AsyncMock()),
             patch.object(
@@ -136,7 +136,7 @@ class UpstreamSyncTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 music.mai,
                 "total_list",
-                SimpleNamespace(by_id=lambda _: True),
+                [SimpleNamespace(id="11167", title="BIRTH")],
                 create=True,
             ),
         ):

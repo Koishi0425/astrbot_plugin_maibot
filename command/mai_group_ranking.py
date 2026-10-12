@@ -19,7 +19,11 @@ async def group_rating_handler(event: AstrMessageEvent):
     message = event.message_str.strip()
     match = re.match(r"^群rating(?:\s+([1-9][0-9]*))?$", message, re.IGNORECASE)
     page = int(match.group(1)) if match and match.group(1) else 1
-    image, error = await get_group_rating_page(event, page)
+    try:
+        image, error = await get_group_rating_page(event, page)
+    except (ValueError, OSError) as exc:
+        yield event.plain_result(str(exc))
+        return
     if error:
         yield event.plain_result(error)
         return
@@ -34,12 +38,18 @@ async def group_rating_handler(event: AstrMessageEvent):
 
 
 async def join_group_rating_handler(event: AstrMessageEvent):
-    _, message = await enroll_group_rating_user(event)
+    try:
+        _, message = await enroll_group_rating_user(event)
+    except (ValueError, OSError) as exc:
+        message = str(exc)
     yield event.plain_result(message)
 
 
 async def leave_group_rating_handler(event: AstrMessageEvent):
-    _, message = await leave_group_rating(event)
+    try:
+        _, message = await leave_group_rating(event)
+    except (ValueError, OSError) as exc:
+        message = str(exc)
     yield event.plain_result(message)
 
 
@@ -48,8 +58,11 @@ async def group_rating_signature_handler(event: AstrMessageEvent):
     if message == "清除群榜签名":
         signature = ""
     else:
-        signature = message[len("群榜签名"):].strip()
-    _, result = await set_group_rating_signature(event, signature)
+        signature = message[len("群榜签名") :].strip()
+    try:
+        _, result = await set_group_rating_signature(event, signature)
+    except (ValueError, OSError) as exc:
+        result = str(exc)
     yield event.plain_result(result)
 
 
@@ -113,7 +126,11 @@ async def group_song_rank_handler(event: AstrMessageEvent):
         yield event.plain_result(error)
         return
 
-    image, error = await get_group_song_rank_page(event, music, level_index, page)
+    try:
+        image, error = await get_group_song_rank_page(event, music, level_index, page)
+    except (ValueError, OSError) as exc:
+        yield event.plain_result(str(exc))
+        return
     if error:
         yield event.plain_result(error)
         return

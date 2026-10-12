@@ -1,6 +1,7 @@
 """Verify upgrades preserve user settings and use AstrBot's data directory."""
 
 import tempfile
+import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,20 +78,89 @@ class ChartPathTests(unittest.IsolatedAsyncioTestCase):
             stats=[SimpleNamespace(fc_dist=[1] * 5, dist=[1] * 14)],
         )
         with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "chart.html"
+            documents = []
+
+            async def capture(target):
+                documents.append((target, target.read_text("utf-8")))
+                return "base64://test"
+
             with (
-                patch.object(score, "pie_html_file", target),
+                patch.object(score, "get_astrbot_temp_path", return_value=temporary),
                 patch.object(
                     score,
                     "run_chrome_to_base64",
-                    AsyncMock(return_value="base64://test"),
+                    capture,
                 ),
             ):
                 await score.music_global_data(music, 0)
             self.assertIn(
                 score.static.resolve().as_uri() + "/echarts.min.js",
-                target.read_text("utf-8"),
+                documents[0][1],
             )
+            self.assertFalse(documents[0][0].exists())
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    async def test_concurrent_queries_capture_their_own_song_and_clean_up(self):
+        from astrbot_plugin_maibot.libraries import maimaidx_player_score as score
+
+        paths = []
+        ready = asyncio.Event()
+
+        async def capture(target):
+            paths.append(target)
+            if len(paths) == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 2)
+            text = target.read_text("utf-8")
+            return "base64://song-A" if "song-A" in text else "base64://song-B"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(score, "get_astrbot_temp_path", return_value=temporary),
+                patch.object(score, "run_chrome_to_base64", capture),
+            ):
+                results = await asyncio.gather(
+                    *(
+                        score.music_global_data(
+                            SimpleNamespace(
+                                id=str(index),
+                                title=title,
+                                stats=[
+                                    SimpleNamespace(
+                                        fc_dist=[index] * 5, dist=[index] * 14
+                                    )
+                                ],
+                            ),
+                            0,
+                        )
+                        for index, title in enumerate(("song-A", "song-B"), 1)
+                    )
+                )
+            self.assertEqual(
+                [result.data["file"] for result in results],
+                ["base64://song-A", "base64://song-B"],
+            )
+            self.assertEqual(len(set(paths)), 2)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    async def test_chart_capture_failure_cleans_temporary_files(self):
+        from astrbot_plugin_maibot.libraries import maimaidx_player_score as score
+
+        music = SimpleNamespace(
+            id="1",
+            title="Test",
+            stats=[SimpleNamespace(fc_dist=[1] * 5, dist=[1] * 14)],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(score, "get_astrbot_temp_path", return_value=temporary),
+                patch.object(
+                    score, "run_chrome_to_base64", AsyncMock(side_effect=OSError)
+                ),
+                self.assertRaises(OSError),
+            ):
+                await score.music_global_data(music, 0)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
 
 
 if __name__ == "__main__":

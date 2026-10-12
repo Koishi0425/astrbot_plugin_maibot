@@ -363,12 +363,13 @@ class ScoreCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         cls.pattern = handler.decorator_list[0].args[0].value
         handler.decorator_list = []
+        cls.mai = SimpleNamespace(total_list=[])
         namespace = {
             "__package__": "astrbot_plugin_maibot",
             "AstrMessageEvent": object,
             "asyncio": asyncio,
             "Path": Path,
-            "mai": SimpleNamespace(total_list=[]),
+            "mai": cls.mai,
             "logger": Mock(),
         }
         exec(
@@ -378,54 +379,76 @@ class ScoreCommandTests(unittest.IsolatedAsyncioTestCase):
         cls.handler = namespace["mai_score_recognition"]
 
     def setUp(self):
-        self.recognize = Mock(return_value=SimpleNamespace(format=lambda: "recognized"))
+        from astrbot.api.event import MessageEventResult
+        from astrbot_plugin_maibot.libraries.maimaidx_score_recognition import (
+            RecognizedScore,
+        )
+
+        rows = {name: Judgements(0, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["TAP"] = Judgements(47, 3, 0, 0, 0)
+        self.mai.total_list = [music(rows)]
+        self.score = RecognizedScore(
+            "official",
+            achievement="100.0000",
+            music_id="12345",
+            title="Test song",
+            difficulty=3,
+            rows=rows,
+            analysis=analyse_judgements(rows, "100.0000"),
+        )
+        self.recognize = Mock(return_value=self.score)
+        drawing = patch(
+            "astrbot_plugin_maibot.libraries.maimaidx_score_image.render_score_image",
+            return_value=b"test image",
+        )
+        self.render = drawing.start()
+        self.addCleanup(drawing.stop)
         self.plugin = SimpleNamespace(
             score_ocr_lock=asyncio.Lock(),
             score_recognizer=SimpleNamespace(recognize=self.recognize),
             _is_group_enabled=lambda group_id: group_id != "disabled",
         )
+        self.event = SimpleNamespace(
+            message_obj=SimpleNamespace(message=[], group_id=""),
+            message_str="mai识分",
+            plain_result=lambda text: MessageEventResult().message(text),
+            chain_result=lambda chain: chain,
+        )
 
     async def test_attached_image(self):
         from astrbot.api.message_components import Image
 
-        event = SimpleNamespace(
-            message_obj=SimpleNamespace(
-                message=[Image.fromFileSystem("score.jpg")], group_id=""
-            ),
-            plain_result=lambda text: text,
-        )
+        event = self.event
+        event.message_obj.message = [Image.fromFileSystem("score.jpg")]
         with patch.object(
             Image, "convert_to_file_path", AsyncMock(return_value="score.jpg")
         ):
             result = [text async for text in type(self).handler(self.plugin, event)]
-        self.assertEqual(result, ["recognized"])
-        self.recognize.assert_called_once_with(Path("score.jpg"), [])
+        self.assertIsInstance(result[0][0], Image)
+        self.assertTrue(result[0][0].file.startswith("base64://"))
+        self.recognize.assert_called_once_with(Path("score.jpg"), self.mai.total_list)
 
     async def test_quoted_image(self):
         from astrbot.api.message_components import Image, Reply
 
-        event = SimpleNamespace(
-            message_obj=SimpleNamespace(
-                message=[Reply(id="1", chain=[Image.fromFileSystem("quoted.jpg")])],
-                group_id="",
-            ),
-            plain_result=lambda text: text,
-        )
+        event = self.event
+        event.message_obj.message = [
+            Reply(id="1", chain=[Image.fromFileSystem("quoted.jpg")])
+        ]
         with patch.object(
             Image, "convert_to_file_path", AsyncMock(return_value="quoted.jpg")
         ):
             result = [text async for text in type(self).handler(self.plugin, event)]
-        self.assertEqual(result, ["recognized"])
-        self.recognize.assert_called_once_with(Path("quoted.jpg"), [])
+        self.assertIsInstance(result[0][0], Image)
+        self.recognize.assert_called_once_with(Path("quoted.jpg"), self.mai.total_list)
 
     async def test_no_image_and_disabled_group(self):
-        event = SimpleNamespace(
-            message_obj=SimpleNamespace(message=[], group_id=""),
-            plain_result=lambda text: text,
-        )
+        event = self.event
         self.assertIn(
             "mai识分",
-            [text async for text in type(self).handler(self.plugin, event)][0],
+            [text async for text in type(self).handler(self.plugin, event)][0]
+            .chain[0]
+            .text,
         )
         event.message_obj.group_id = "disabled"
         self.assertEqual(
@@ -433,10 +456,56 @@ class ScoreCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         self.recognize.assert_not_called()
 
+    async def test_manual_command_generates_image_without_ocr(self):
+        from astrbot.api.message_components import Image
+
+        self.event.message_str = (
+            "  mai识分 id=12345 ach=100.0000 diff=紫 tap=47/3/0/0/0 "
+            "hold=0/0/0/0/0 slide=0/0/0/0/0 touch=0/0/0/0/0 break=0/0/0/0/0"
+        )
+        result = [item async for item in type(self).handler(self.plugin, self.event)]
+        self.assertIsInstance(result[0][0], Image)
+        self.recognize.assert_not_called()
+        self.render.assert_called_once()
+
+    async def test_partial_ocr_preserves_known_values_in_completion(self):
+        from astrbot.api.message_components import Image
+
+        self.score.rows = {}
+        self.score.partial_rows = {"TAP": [47, None, None, 0, 0]}
+        self.score.analysis = None
+        self.event.message_obj.message = [Image.fromFileSystem("partial.jpg")]
+        with patch.object(
+            Image, "convert_to_file_path", AsyncMock(return_value="partial.jpg")
+        ):
+            result = [
+                item async for item in type(self).handler(self.plugin, self.event)
+            ]
+        self.assertIn("tap=47/?/?/0/0", result[0].chain[0].text)
+        self.assertIn("id=12345 ach=100.0000", result[0].chain[0].text)
+        self.render.assert_not_called()
+
+    async def test_missing_drawing_font_keeps_recognized_data_editable(self):
+        from astrbot.api.message_components import Image
+
+        self.render.side_effect = OSError("font unavailable")
+        self.event.message_obj.message = [Image.fromFileSystem("score.jpg")]
+        with patch.object(
+            Image, "convert_to_file_path", AsyncMock(return_value="score.jpg")
+        ):
+            result = [
+                item async for item in type(self).handler(self.plugin, self.event)
+            ]
+        self.assertIn("绘图字体", result[0].chain[0].text)
+        self.assertIn("tap=47/3/0/0/0", result[0].chain[0].text)
+
     def test_command_does_not_capture_other_bots_shifen_command(self):
         self.assertIsNotNone(re.fullmatch(self.pattern, "mai识分"))
         self.assertIsNone(re.fullmatch(self.pattern, "识分"))
         self.assertIsNone(re.fullmatch(self.pattern, "mai识分 12345"))
+        self.assertIsNotNone(
+            re.fullmatch(self.pattern, "mai识分 id=11167 ach=100.2098")
+        )
 
 
 @unittest.skipUnless(

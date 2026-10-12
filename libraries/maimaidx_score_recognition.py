@@ -103,6 +103,8 @@ class RecognizedScore:
     title: str | None = None
     difficulty: int | None = None
     rows: dict[str, Judgements] = field(default_factory=dict)
+    partial_rows: dict[str, list[int | None]] = field(default_factory=dict)
+    merged_perfect: bool = False
     aggregate: Judgements | None = None
     analysis: ScoreAnalysis | None = None
     warnings: list[str] = field(default_factory=list)
@@ -435,6 +437,8 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
         JudgementTable() if summary else parse_table(tokens, result.warnings)
     )
     table, merged = observed_table.cells, observed_table.merged
+    result.partial_rows = table
+    result.merged_perfect = merged
     if summary:
         values = []
         for aliases in HEADER_ALIASES:

@@ -362,6 +362,9 @@ async def push_alias(push: PushAliasStatus, context=None):
     """
     if push.Type != "Apply" or not maiApi.config.maimaidxaliaspush or context is None:
         return
+    if not getattr(alias, "storage_available", True):
+        log.warning("Alias broadcasts disabled until group settings are restored")
+        return
     from astrbot.api.event import filter
 
     platform = context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
