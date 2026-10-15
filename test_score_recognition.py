@@ -292,11 +292,87 @@ class TableRecognitionTests(unittest.TestCase):
         self.assertEqual(result.rows, self.rows)
         self.assertTrue(any("BREAK 标签" in text for text in result.warnings))
 
+    def test_missing_last_row_label_keeps_unread_cells_unknown(self):
+        tokens = [
+            t
+            for t in self.tokens
+            if t.text != "BREAK" and not (t.y == 343 and t.x in (570, 660))
+        ]
+        result = parse_ocr_tokens(tokens, self.catalog)
+        self.assertEqual(result.partial_rows["BREAK"], [7, 3, 0, None, None])
+        self.assertNotIn("BREAK", result.rows)
+
     def test_missing_critical_header_still_detects_five_columns(self):
         result = parse_ocr_tokens(
             [t for t in self.tokens if t.text != "CRIT."], self.catalog
         )
         self.assertEqual(result.rows, self.rows)
+
+    def test_critical_perfect_misread_as_perfect_does_not_drop_a_column(self):
+        rows = {
+            "TAP": Judgements(668, 327, 20, 1, 1),
+            "HOLD": Judgements(76, 26, 1, 0, 0),
+            "SLIDE": Judgements(90, 0, 0, 0, 0),
+            "TOUCH": Judgements(75, 0, 0, 0, 0),
+            "BREAK": Judgements(59, 12, 1, 0, 0),
+        }
+        tokens = [
+            t
+            for t in table_tokens(rows, "100.5782")
+            if t.text not in ("CRIT.", "PERF.")
+        ] + [token("PERFECT", 300, 130)]
+        result = parse_ocr_tokens(tokens, [music(rows)])
+        self.assertFalse(result.merged_perfect)
+        self.assertEqual(result.rows, rows)
+        self.assertEqual(result.analysis.candidates, [BreakDetails(8, 4, 1)])
+
+    def test_four_columns_with_a_counter_beyond_miss_remain_four_columns(self):
+        rows = {name: Judgements(None, 10, 0, 0, 0) for name in NOTE_TYPES}
+        tokens = table_tokens(rows, "101.0000", merged=True)
+        tokens.extend(token("12", 750, 175 + 42 * index) for index in range(5))
+        result = parse_ocr_tokens(tokens, [music(rows)])
+        self.assertTrue(result.merged_perfect)
+        self.assertEqual(result.rows, rows)
+
+    def test_five_visible_columns_survive_all_header_omission_combinations(self):
+        headers = ("CRIT.", "PERF.", "GREAT", "GOOD", "MISS")
+        for mask in range(32):
+            tokens = [
+                t
+                for t in self.tokens
+                if t.y != 130 or mask & (1 << headers.index(t.text))
+            ]
+            with self.subTest(mask=mask):
+                result = parse_ocr_tokens(tokens, self.catalog)
+                self.assertFalse(result.merged_perfect)
+                self.assertEqual(result.rows, self.rows)
+
+    def test_columns_are_recovered_when_every_row_misses_a_different_cell(self):
+        tokens = [
+            t
+            for t in self.tokens
+            if t.y != 130
+            and not any(
+                t.y == 175 + row * 42 and t.x == 300 + (4 - row) * 90
+                for row in range(5)
+            )
+        ]
+        result = parse_ocr_tokens(tokens, self.catalog)
+        self.assertFalse(result.merged_perfect)
+        self.assertEqual(result.rows, self.rows)
+        self.assertEqual(result.analysis.status, "unique")
+
+    def test_current_achievement_region_excludes_personal_best_and_accepts_missing_percent(
+        self,
+    ):
+        tokens = [t for t in self.tokens if "%" not in t.text]
+        tokens.extend([token("达成率", 280, 65, width=80), token("100.0000%", 400, 65)])
+        self.assertIsNone(parse_ocr_tokens(tokens, self.catalog).achievement)
+        result = parse_ocr_tokens(
+            tokens + [token("100.875000", 300, 100, width=200, height=50)], self.catalog
+        )
+        self.assertEqual(result.achievement, "100.875000")
+        self.assertEqual(result.analysis.status, "unique")
 
     def test_difficulty_is_not_assumed_when_absent(self):
         result = parse_ocr_tokens(
@@ -454,6 +530,146 @@ class TableRecognitionTests(unittest.TestCase):
 
 
 class OCRRecoveryTests(unittest.TestCase):
+    def test_enlarged_partial_number_keeps_the_observed_full_counter(self):
+        """Do not replace a confident 378 with a smaller detection of just 78."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["TAP"] = Judgements(378, 222, 21, 2, 0)
+        value = calculate_achievement(rows, BreakDetails())
+        units = round(value * 10000)
+        observations = table_tokens(rows, f"{units // 10000}.{units % 10000:04d}")
+        # The enlarged fixture covers source (97, 82) to (800, 376).
+        scale = 1800 / 703
+        partial = token(
+            "78",
+            (310 - 97) * scale,
+            (175 - 82) * scale,
+            width=20 * scale,
+            height=12 * scale,
+        )
+        outputs = []
+        for tokens in (observations, [replace(partial, score=0.98)]):
+            outputs.append(
+                SimpleNamespace(
+                    boxes=np.array(
+                        [
+                            [
+                                [t.left, t.top],
+                                [t.right, t.top],
+                                [t.right, t.bottom],
+                                [t.left, t.bottom],
+                            ]
+                            for t in tokens
+                        ]
+                    ),
+                    txts=tuple(t.text for t in tokens),
+                    scores=tuple(t.score for t in tokens),
+                )
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            Image.new("RGB", (800, 500), "white").save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = Mock(side_effect=outputs)
+            result = recognizer.recognize(path, [music(rows)])
+        self.assertEqual(result.rows, rows)
+        self.assertEqual(result.analysis.status, "unique")
+        self.assertEqual(recognizer.engine.call_count, 2)
+
+    def test_missing_break_label_does_not_crop_out_last_row_or_skip_its_cells(self):
+        """Keep the visible last row and reread its missing zeroes from pixels."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["BREAK"] = Judgements(7, 3, 0, 0, 0)
+        observations = [
+            t
+            for t in table_tokens(rows, "100.875000")
+            if t.text != "BREAK" and not (t.y == 343 and t.x in (570, 660))
+        ]
+        outputs = []
+        for tokens in (observations, []):
+            outputs.append(
+                SimpleNamespace(
+                    boxes=np.array(
+                        [
+                            [
+                                [t.left, t.top],
+                                [t.right, t.top],
+                                [t.right, t.bottom],
+                                [t.left, t.bottom],
+                            ]
+                            for t in tokens
+                        ]
+                    ),
+                    txts=tuple(t.text for t in tokens),
+                    scores=tuple(t.score for t in tokens),
+                )
+            )
+        outputs.extend(SimpleNamespace(txts=("0",), scores=(0.99,)) for _ in range(2))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            picture = Image.new("RGB", (800, 500), "white")
+            picture.paste("black", (0, 340, 800, 350))
+            picture.save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = Mock(side_effect=outputs)
+            result = recognizer.recognize(path, [music(rows)])
+        self.assertTrue(np.any(recognizer.engine.call_args_list[1].args[0] == 0))
+        self.assertEqual(result.rows, rows)
+        self.assertEqual(result.analysis.status, "unique")
+        self.assertEqual(recognizer.engine.call_count, 4)
+
+    def test_missing_large_score_is_retried_below_the_achievement_label(self):
+        """Read the score region even when only the personal best was detected."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {
+            "TAP": Judgements(378, 222, 21, 2, 0),
+            "HOLD": Judgements(54, 23, 0, 0, 0),
+            "SLIDE": Judgements(132, 0, 1, 0, 0),
+            "TOUCH": Judgements(93, 0, 0, 0, 1),
+            "BREAK": Judgements(65, 33, 2, 0, 0),
+        }
+        observations = [t for t in table_tokens(rows, "100.4033") if "%" not in t.text]
+        observations.extend(
+            [token("达成率", 280, 65, width=80), token("100.1442%", 400, 65)]
+        )
+        outputs = []
+        for tokens in (observations, [], [token("100.1442%", 30, 10)]):
+            outputs.append(
+                SimpleNamespace(
+                    boxes=np.array(
+                        [
+                            [
+                                [t.left, t.top],
+                                [t.right, t.top],
+                                [t.right, t.bottom],
+                                [t.left, t.bottom],
+                            ]
+                            for t in tokens
+                        ]
+                    ),
+                    txts=tuple(t.text for t in tokens),
+                    scores=tuple(t.score for t in tokens),
+                )
+            )
+        outputs.insert(2, SimpleNamespace(txts=("100.1442%",), scores=(0.99,)))
+        outputs.append(SimpleNamespace(txts=("100.4033%",), scores=(0.99,)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            Image.new("RGB", (1000, 650), "white").save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = Mock(side_effect=outputs)
+            result = recognizer.recognize(path, [music(rows)])
+        self.assertEqual(result.achievement, "100.4033")
+        self.assertEqual(result.analysis.candidates, [BreakDetails(31, 2, 2)])
+        self.assertEqual(recognizer.engine.call_count, 5)
+
     def test_failed_percentage_reread_does_not_select_personal_best(self):
         """Require new pixels to recover the current score instead of its best."""
         import numpy as np
@@ -847,6 +1063,22 @@ class LocalScoreImageTests(unittest.TestCase):
                             "BREAK": Judgements(57, 4, 0, 0, 0),
                         },
                     )
+                if filename in ("反光机台红谱照片.jpg", "带历史最佳机台照片.jpg"):
+                    from PIL import Image
+
+                    with tempfile.TemporaryDirectory() as directory:
+                        compressed_path = Path(directory) / "compressed.jpg"
+                        with Image.open(root / filename) as picture:
+                            picture.convert("RGB").resize(
+                                (1024, round(picture.height * 1024 / picture.width))
+                            ).save(compressed_path, quality=80)
+                        compressed = recognizer.recognize(compressed_path, musics)
+                    self.assertEqual(compressed.music_id, result.music_id)
+                    self.assertEqual(compressed.difficulty, result.difficulty)
+                    self.assertEqual(compressed.achievement, result.achievement)
+                    self.assertEqual(compressed.rows, result.rows)
+                    self.assertFalse(compressed.merged_perfect)
+                    self.assertEqual(compressed.analysis.candidates, [details])
 
 
 if __name__ == "__main__":

@@ -121,6 +121,8 @@ WebUI 配置项：
 
 运行时图片资源读取插件目录下的 `static/`。资源包不会随插件发布，部署者需要自行准备资源并导入到 `static/`。
 
+通过 WebUI 更新插件会替换插件目录。若更新后封面、Logo 或字体消失，请再次执行 `更新舞萌资源` 导入已有资源包。本地 `.7z` 建议保存在插件目录之外，例如 `/AstrBot/data/maibot-resources/Resource.7z`，以便升级后重复使用。
+
 静态资源请参考项目[Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX)中作者发布的资源包。(以下链接截止至2026-06-30更新)
    - [Cloudreve私人云盘](https://cloud.yuzuchan.moe/f/34s7/Resource%20CN1.55.7z)
    - [onedrive](https://yuzuai-my.sharepoint.com/:u:/g/personal/yuzu_yuzuchan_moe/IQBGKHie6MAaTZy3rME7Q-ruAVKgXDCKROqz5e25KtMeeVY?e=53eC6a)

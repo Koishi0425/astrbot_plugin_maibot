@@ -336,11 +336,11 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
     if slopes:
         step = median(slopes)
         origin = median(x - column * step for column, x in header_hits.items())
-    else:
+    if merged or not slopes:
         # Glare can erase the colored headers while leaving five numeric cells
-        # readable. Require an actual evenly spaced five-cell row, never assume
+        # readable. Require five distinct evenly spaced numeric columns, never assume
         # that four visible columns include a separate CRITICAL count.
-        grids = []
+        candidate_rows = []
         for anchor in anchors.values():
             row = sorted(
                 (
@@ -350,18 +350,48 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
                     and abs(token.y - anchor.y) < spacing * 0.43
                 )
             )[:5]
+            candidate_rows.append(row)
+        # Tiny zeroes can be missed in different rows. Cluster the observed
+        # positions across the table without inventing any cell values.
+        clusters = []
+        for x in sorted(
+            token.x
+            for token, _ in numbers
+            if token.left > max(anchor.right for anchor in anchors.values())
+            and first_y - spacing * 0.43
+            < token.y
+            < max(anchor.y for anchor in anchors.values()) + spacing * 1.5
+        ):
+            if clusters and x - median(clusters[-1]) < spacing * 0.8:
+                clusters[-1].append(x)
+            else:
+                clusters.append([x])
+        if len(clusters) >= 5:
+            candidate_rows.append([median(cluster) for cluster in clusters[:5]])
+        grids = []
+        for row in candidate_rows:
             if len(row) == 5:
                 gaps = [b - a for a, b in zip(row, row[1:])]
                 width = median(gaps)
                 if width > 0 and all(0.65 * width < gap < 1.35 * width for gap in gaps):
-                    grids.append((row[0], width))
-        if not grids:
+                    if (
+                        4 not in header_hits
+                        or abs(row[4] - header_hits[4]) < width * 0.6
+                    ):
+                        grids.append(row)
+        if not grids and not slopes:
             return JudgementTable()
-        origin = median(grid[0] for grid in grids)
-        step = median(grid[1] for grid in grids)
-        merged = False
-        columns = tuple(range(5))
-        warnings.append("表头未完整识别，根据五列判定位置恢复。")
+        if grids:
+            header_hits = {
+                column: median(row[column] for row in grids) for column in range(5)
+            }
+            origin = header_hits[0]
+            step = median(
+                header_hits[b] - header_hits[a] for a, b in zip(range(4), range(1, 5))
+            )
+            merged = False
+            columns = tuple(range(5))
+            warnings.append("表头未完整识别，根据五列判定位置恢复。")
     if step <= 0:
         return JudgementTable()
     if merged:
@@ -394,9 +424,17 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
             token
             for token, _ in numbers
             if abs(token.y - y) < row_step * 0.4
-            and token.x > origin + (columns[0] - 0.5) * step
+            and origin + (columns[0] - 0.5) * step < token.x < origin + 4.5 * step
         ]
-        if len(nearby) >= len(columns) - 1 and all(
+        observed_columns = {
+            column
+            for column in columns
+            if any(
+                abs(token.x - (origin + column * step)) < step * 0.43
+                for token in nearby
+            )
+        }
+        if len(observed_columns) >= 3 and all(
             abs(token.y - y) > row_step * 0.5 for token in anchors.values()
         ):
             anchors[missing] = OCRToken(missing, 1, 0, y - 1, 0, y + 1)
@@ -479,11 +517,29 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
                     max(prefix.bottom, suffix.bottom),
                 )
             )
+    achievement_labels = [
+        token for token in tokens if plain(token.text) in ("达成率", "ACHIEVEMENT")
+    ]
     percentages = []
     for token in percentage_tokens:
+        current_region = any(
+            label.left - 3 * (label.right - label.left)
+            < token.x
+            < label.right + 8 * (label.right - label.left)
+            and label.bottom
+            < token.y
+            < label.bottom
+            + max(6 * (label.bottom - label.top), 2 * (label.right - label.left))
+            for label in achievement_labels
+        )
+        if achievement_labels and not current_region:
+            continue
+        text = unicodedata.normalize("NFKC", token.text).strip()
+        if current_region and re.fullmatch(r"[0-9]{1,3}\.[0-9]{4,8}", text):
+            text += "%"
         for match in re.finditer(
             r"(?<![\d.])([0-9]{1,3}\.[0-9]{1,8})\s*[%％]",
-            unicodedata.normalize("NFKC", token.text),
+            text,
         ):
             value = match.group(1)
             if float(value) <= 101:
@@ -770,6 +826,18 @@ class ScoreRecognizer:
                 source.shape[0],
                 int(max(token.bottom for token in anchors) + spacing * 0.6),
             )
+            if not summary:
+                positions = [
+                    (NOTE_TYPES.index(name), token.y)
+                    for token in anchors
+                    for name, aliases in ROW_ALIASES.items()
+                    if any(plain(token.text).startswith(alias) for alias in aliases)
+                ]
+                row_origin = median(y - index * spacing for index, y in positions)
+                top = max(0, min(top, int(row_origin - 2 * spacing)))
+                bottom = min(
+                    source.shape[0], max(bottom, int(row_origin + 4.8 * spacing))
+                )
             slope = median(token.slope for token in anchors)
             top = max(0, int(top + min(0, slope) * source.shape[1]))
             bottom = min(source.shape[0], int(bottom + max(0, slope) * source.shape[1]))
@@ -793,9 +861,24 @@ class ScoreRecognizer:
                 for box, text, score in zip(
                     table_output.boxes, table_output.txts, table_output.scores
                 ):
-                    new_tokens.append(
-                        OCRToken.from_box(text, score, box, scale, (left, top))
-                    )
+                    new = OCRToken.from_box(text, score, box, scale, (left, top))
+                    # Enlarged detection can omit a leading digit. Keep the
+                    # earlier, more confident full counter when its box contains
+                    # the shorter observation; never reconstruct unseen digits.
+                    if integer(new.text) is not None:
+                        complete_counters = [
+                            old
+                            for old in previous_tokens
+                            if integer(old.text) is not None
+                            and len(old.text.strip()) > len(new.text.strip())
+                            and new.text.strip() in old.text.strip()
+                            and old.score >= max(0.8, new.score)
+                            and old.left <= new.x <= old.right
+                            and old.top <= new.y <= old.bottom
+                        ]
+                        if complete_counters:
+                            new = max(complete_counters, key=lambda token: token.score)
+                    new_tokens.append(new)
                 # Keep first-pass cells when enlarging the table misses them.
                 tokens = new_tokens + [
                     token
@@ -926,6 +1009,7 @@ class ScoreRecognizer:
             fragments = [
                 token for token in tokens if re.search(r"\.[0-9]+[%％]", token.text)
             ]
+            regions = []
             if fragments:
                 focus = max(fragments, key=lambda token: token.area)
                 height = focus.bottom - focus.top
@@ -938,6 +1022,34 @@ class ScoreRecognizer:
                 right = min(source.shape[1], int(focus.right + height * 0.1))
                 top = max(0, int(focus.top - height * 0.15))
                 bottom = min(source.shape[0], int(focus.bottom + height * 0.15))
+                regions.append((left, top, right, bottom, focus.y, height))
+            for label in tokens:
+                if plain(label.text) not in ("达成率", "ACHIEVEMENT"):
+                    continue
+                width = label.right - label.left
+                height = label.bottom - label.top
+                english = plain(label.text) == "ACHIEVEMENT"
+                left = max(0, int(label.left - width * (0.5 if english else 3)))
+                right = min(
+                    source.shape[1], int(label.right + width * (1 if english else 8))
+                )
+                top = max(0, int(label.bottom))
+                bottom = min(
+                    source.shape[0],
+                    int(
+                        top
+                        + max(
+                            height * (4 if english else 6),
+                            width * (0.5 if english else 2),
+                        )
+                    ),
+                )
+                regions.append(
+                    (left, top, right, bottom, (top + bottom) / 2, bottom - top)
+                )
+            for left, top, right, bottom, center_y, height in regions:
+                if right <= left or bottom <= top:
+                    continue
                 crop = source[top:bottom, left:right]
                 for detect in (False, True):
                     output = self.engine(
@@ -955,7 +1067,7 @@ class ScoreRecognizer:
                                     output.boxes[index],
                                     offset=(left, top),
                                 )
-                                if abs(token.y - focus.y) < height * 0.4:
+                                if abs(token.y - center_y) < height * 0.4:
                                     recovered.append(token)
                             elif confidence >= 0.98:
                                 recovered.append(
@@ -988,4 +1100,10 @@ class ScoreRecognizer:
                     ):
                         result = candidate
                         break
+                if (
+                    result.achievement is not None
+                    and result.analysis is not None
+                    and result.analysis.status in ("unique", "ambiguous")
+                ):
+                    break
         return result
