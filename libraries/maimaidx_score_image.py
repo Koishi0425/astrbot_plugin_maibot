@@ -365,9 +365,6 @@ def render_score_image(score: RecognizedScore, music=None) -> bytes:
         footnotes.append(
             "细分栏以区间展示所有符合计分规则的数量；失分范围单位为百分比。"
         )
-    footnotes.extend(
-        warning for warning in dict.fromkeys(score.warnings) if warning not in footnotes
-    )
     card = _ScoreCanvas(1590 + len(footnotes) * 52)
     card.asset(themepicdir / "logo.png", (65, 32, 269, 129))
     card.draw.rounded_rectangle((1040, 58, 1125, 107), 24, fill=(97, 127, 147, 160))

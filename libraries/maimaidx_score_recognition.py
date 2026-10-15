@@ -4,7 +4,7 @@ The table-layout approach follows maimai-score-studio. Missing cells and
 non-unique BREAK solutions are kept explicit instead of filled with guesses.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from statistics import median
@@ -70,6 +70,32 @@ class OCRToken:
     top: float
     right: float
     bottom: float
+    slope: float = 0
+
+    @classmethod
+    def from_box(cls, text, score, box, scale=1, offset=(0, 0)):
+        """Preserve the text angle while mapping an OCR crop to source coordinates.
+
+        Args:
+            text: Recognized text.
+            score: OCR confidence.
+            box: Four ordered corners returned by the detector.
+            scale: Enlargement applied before OCR.
+            offset: Source coordinates of the crop's upper-left corner.
+
+        Returns:
+            Token with source bounds and the slope of its horizontal edges.
+        """
+        return cls(
+            str(text),
+            float(score),
+            float(box[:, 0].min()) / scale + offset[0],
+            float(box[:, 1].min()) / scale + offset[1],
+            float(box[:, 0].max()) / scale + offset[0],
+            float(box[:, 1].max()) / scale + offset[1],
+            float(box[1, 1] - box[0, 1] + box[2, 1] - box[3, 1])
+            / max(1, float(box[1, 0] - box[0, 0] + box[2, 0] - box[3, 0])),
+        )
 
     @property
     def x(self) -> float:
@@ -216,6 +242,26 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
         Row cells, column mode, and cell geometry. Unreadable cells remain None,
         never an assumed zero.
     """
+    row_labels = [
+        token
+        for token in tokens
+        if any(
+            plain(token.text).startswith(alias)
+            for aliases in ROW_ALIASES.values()
+            for alias in aliases
+        )
+    ]
+    slope = median(token.slope for token in row_labels) if row_labels else 0
+    # Compare rows in a deskewed coordinate system. A cabinet photo's rightmost
+    # cell can sit more than one row below its label in the original image.
+    tokens = [
+        replace(
+            token,
+            top=token.top - slope * token.x,
+            bottom=token.bottom - slope * token.x,
+        )
+        for token in tokens
+    ]
     anchors = {}
     for name, aliases in ROW_ALIASES.items():
         hits = [
@@ -269,12 +315,6 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
         for b in columns
         if a < b and a in header_hits and b in header_hits
     ]
-    if not slopes:
-        return JudgementTable()
-    step = median(slopes)
-    if step <= 0:
-        return JudgementTable()
-    origin = median(x - column * step for column, x in header_hits.items())
     numbers = []
     for token in tokens:
         value = integer(token.text)
@@ -293,6 +333,37 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
                     token.bottom,
                 )
                 numbers.append((cell, int(match.group())))
+    if slopes:
+        step = median(slopes)
+        origin = median(x - column * step for column, x in header_hits.items())
+    else:
+        # Glare can erase the colored headers while leaving five numeric cells
+        # readable. Require an actual evenly spaced five-cell row, never assume
+        # that four visible columns include a separate CRITICAL count.
+        grids = []
+        for anchor in anchors.values():
+            row = sorted(
+                (
+                    token.x
+                    for token, _ in numbers
+                    if token.left > anchor.right
+                    and abs(token.y - anchor.y) < spacing * 0.43
+                )
+            )[:5]
+            if len(row) == 5:
+                gaps = [b - a for a, b in zip(row, row[1:])]
+                width = median(gaps)
+                if width > 0 and all(0.65 * width < gap < 1.35 * width for gap in gaps):
+                    grids.append((row[0], width))
+        if not grids:
+            return JudgementTable()
+        origin = median(grid[0] for grid in grids)
+        step = median(grid[1] for grid in grids)
+        merged = False
+        columns = tuple(range(5))
+        warnings.append("表头未完整识别，根据五列判定位置恢复。")
+    if step <= 0:
+        return JudgementTable()
     if merged:
         critical_cells = [
             token
@@ -335,7 +406,7 @@ def parse_table(tokens: list[OCRToken], warnings: list[str]) -> JudgementTable:
         cells = [None] * 5
         for column in columns:
             x = header_hits.get(column, origin + column * step)
-            result.centers[name, column] = (x, anchor.y)
+            result.centers[name, column] = (x, anchor.y + slope * x)
             hits = [
                 (token, value)
                 for token, value in numbers
@@ -376,8 +447,40 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
     result = RecognizedScore(
         "adx_summary" if summary else "adx_details" if adx else "details"
     )
+    percentage_tokens = tokens.copy()
+    for suffix in tokens:
+        text = unicodedata.normalize("NFKC", suffix.text).strip()
+        if not re.fullmatch(r"\.?[0-9]{1,8}%", text):
+            continue
+        prefixes = [
+            prefix
+            for prefix in tokens
+            if re.fullmatch(
+                r"[0-9]{1,3}\.?", unicodedata.normalize("NFKC", prefix.text).strip()
+            )
+            and (prefix.text.endswith(".") or text.startswith("."))
+            and -0.6 * (suffix.bottom - suffix.top)
+            <= suffix.left - prefix.right
+            < 0.8 * max(prefix.bottom - prefix.top, suffix.bottom - suffix.top)
+            and abs(prefix.y - suffix.y)
+            < 0.35 * max(prefix.bottom - prefix.top, suffix.bottom - suffix.top)
+        ]
+        if len(prefixes) == 1:
+            prefix = prefixes[0]
+            percentage_tokens.append(
+                OCRToken(
+                    unicodedata.normalize("NFKC", prefix.text).strip().rstrip(".")
+                    + "."
+                    + text.lstrip("."),
+                    min(prefix.score, suffix.score),
+                    prefix.left,
+                    min(prefix.top, suffix.top),
+                    suffix.right,
+                    max(prefix.bottom, suffix.bottom),
+                )
+            )
     percentages = []
-    for token in tokens:
+    for token in percentage_tokens:
         for match in re.finditer(
             r"(?<![\d.])([0-9]{1,3}\.[0-9]{1,8})\s*[%％]",
             unicodedata.normalize("NFKC", token.text),
@@ -386,7 +489,14 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
             if float(value) <= 101:
                 percentages.append((token.area, float(value), value, token.score))
     if percentages:
-        _, _, result.achievement, confidence = max(percentages)
+        area, _, result.achievement, confidence = max(percentages)
+        if any(
+            re.fullmatch(r"\.[0-9]{1,8}[%％]", token.text.strip()) and token.area > area
+            for token in tokens
+        ):
+            # A larger incomplete current score takes precedence over a small
+            # complete personal best; let the recognizer reread its pixels.
+            result.achievement = None
         if confidence < 0.8:
             result.warnings.append("达成率识别置信度较低，请核对。")
     difficulty_hits = []
@@ -540,6 +650,13 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
             continue
         required = range(1 if merged else 0, 5)
         missing = [index for index in required if cells[index] is None]
+        if (
+            expected_notes is not None
+            and expected_notes[NOTE_TYPES.index(name)] == 0
+            and all(cells[index] in (None, 0) for index in required)
+        ):
+            for index in required:
+                cells[index] = 0
         if len(missing) == 1 and expected_notes is not None:
             recovered = expected_notes[NOTE_TYPES.index(name)] - sum(
                 value for value in cells if value is not None
@@ -615,18 +732,10 @@ class ScoreRecognizer:
         output = self.engine(source, use_det=True, use_cls=True, use_rec=True)
         if output.boxes is None or output.txts is None or output.scores is None:
             raise ValueError("未识别到文字，请发送清晰的完整结算图片。")
-        tokens = []
-        for box, text, score in zip(output.boxes, output.txts, output.scores):
-            tokens.append(
-                OCRToken(
-                    str(text),
-                    float(score),
-                    float(box[:, 0].min()),
-                    float(box[:, 1].min()),
-                    float(box[:, 0].max()),
-                    float(box[:, 1].max()),
-                )
-            )
+        tokens = [
+            OCRToken.from_box(text, score, box)
+            for box, text, score in zip(output.boxes, output.txts, output.scores)
+        ]
         anchors = [
             token
             for token in tokens
@@ -661,6 +770,9 @@ class ScoreRecognizer:
                 source.shape[0],
                 int(max(token.bottom for token in anchors) + spacing * 0.6),
             )
+            slope = median(token.slope for token in anchors)
+            top = max(0, int(top + min(0, slope) * source.shape[1]))
+            bottom = min(source.shape[0], int(bottom + max(0, slope) * source.shape[1]))
             # Keep all columns, including MISS; row labels anchor the left edge.
             right = source.shape[1]
             crop = source[top:bottom, left:right]
@@ -682,14 +794,7 @@ class ScoreRecognizer:
                     table_output.boxes, table_output.txts, table_output.scores
                 ):
                     new_tokens.append(
-                        OCRToken(
-                            str(text),
-                            float(score),
-                            float(box[:, 0].min()) / scale + left,
-                            float(box[:, 1].min()) / scale + top,
-                            float(box[:, 0].max()) / scale + left,
-                            float(box[:, 1].max()) / scale + top,
-                        )
+                        OCRToken.from_box(text, score, box, scale, (left, top))
                     )
                 # Keep first-pass cells when enlarging the table misses them.
                 tokens = new_tokens + [
@@ -760,9 +865,23 @@ class ScoreRecognizer:
                                 )
                             )
         else:
+            observed = parse_ocr_tokens(tokens, musics)
+            matched = next(
+                (music for music in musics if str(music.id) == observed.music_id), None
+            )
+            retry_rows = set()
+            if matched is not None and observed.difficulty is not None:
+                notes = tuple(matched.charts[observed.difficulty].notes)
+                if len(notes) == 4:
+                    notes = (*notes[:3], 0, notes[3])
+                retry_rows = {
+                    name
+                    for name, row in observed.rows.items()
+                    if row.total != notes[NOTE_TYPES.index(name)]
+                }
             table = parse_table(tokens, [])
             for (name, column), (x, y) in table.centers.items():
-                if table.cells[name][column] is not None:
+                if table.cells[name][column] is not None and name not in retry_rows:
                     continue
                 left, right = (
                     max(0, int(x - table.column_step * 0.42)),
@@ -778,7 +897,16 @@ class ScoreRecognizer:
                     use_cls=False,
                     use_rec=True,
                 )
-                if cell_output.txts and integer(cell_output.txts[0]) is not None:
+                if (
+                    cell_output.txts
+                    and integer(cell_output.txts[0]) is not None
+                    and cell_output.scores[0] >= 0.8
+                ):
+                    tokens = [
+                        token
+                        for token in tokens
+                        if not (left <= token.x <= right and top <= token.y <= bottom)
+                    ]
                     tokens.append(
                         OCRToken(
                             str(cell_output.txts[0]),
@@ -789,4 +917,75 @@ class ScoreRecognizer:
                             bottom,
                         )
                     )
-        return parse_ocr_tokens(tokens, musics)
+        result = parse_ocr_tokens(tokens, musics)
+        if result.achievement is None or (
+            result.analysis is not None and result.analysis.status == "inconsistent"
+        ):
+            # Large result digits may be split by font size, or 8 may become 0
+            # in the full photo. Read their original pixels at local resolution.
+            fragments = [
+                token for token in tokens if re.search(r"\.[0-9]+[%％]", token.text)
+            ]
+            if fragments:
+                focus = max(fragments, key=lambda token: token.area)
+                height = focus.bottom - focus.top
+                left = max(
+                    0,
+                    int(
+                        focus.left - (3 if focus.text.startswith(".") else 0.1) * height
+                    ),
+                )
+                right = min(source.shape[1], int(focus.right + height * 0.1))
+                top = max(0, int(focus.top - height * 0.15))
+                bottom = min(source.shape[0], int(focus.bottom + height * 0.15))
+                crop = source[top:bottom, left:right]
+                for detect in (False, True):
+                    output = self.engine(
+                        crop, use_det=detect, use_cls=False, use_rec=True
+                    )
+                    recovered = []
+                    if output.txts is not None and output.scores is not None:
+                        for index, (text, confidence) in enumerate(
+                            zip(output.txts, output.scores)
+                        ):
+                            if detect and output.boxes is not None:
+                                token = OCRToken.from_box(
+                                    text,
+                                    confidence,
+                                    output.boxes[index],
+                                    offset=(left, top),
+                                )
+                                if abs(token.y - focus.y) < height * 0.4:
+                                    recovered.append(token)
+                            elif confidence >= 0.98:
+                                recovered.append(
+                                    OCRToken(
+                                        str(text),
+                                        float(confidence),
+                                        left,
+                                        top,
+                                        right,
+                                        bottom,
+                                    )
+                                )
+                    if not recovered:
+                        continue
+                    # Remove previous percentage observations, including the
+                    # smaller personal best. Only this crop may supply a retry.
+                    candidate = parse_ocr_tokens(
+                        [
+                            token
+                            for token in tokens
+                            if not re.search(r"[0-9]+[%％]", token.text)
+                        ]
+                        + recovered,
+                        musics,
+                    )
+                    if candidate.achievement is not None and (
+                        result.achievement is None
+                        or candidate.analysis is not None
+                        and candidate.analysis.status in ("unique", "ambiguous")
+                    ):
+                        result = candidate
+                        break
+        return result

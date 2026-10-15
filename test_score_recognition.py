@@ -2,11 +2,13 @@
 
 import ast
 import asyncio
+from dataclasses import replace
 import json
 from fractions import Fraction
 import os
 from pathlib import Path
 import re
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -21,6 +23,7 @@ from astrbot_plugin_maibot.libraries.maimaidx_score import (
 )
 from astrbot_plugin_maibot.libraries.maimaidx_score_recognition import (
     OCRToken,
+    ScoreRecognizer,
     parse_ocr_tokens,
 )
 
@@ -316,6 +319,112 @@ class TableRecognitionTests(unittest.TestCase):
         result = parse_ocr_tokens(tokens, self.catalog)
         self.assertEqual(result.achievement, "100.875000")
 
+    def test_tilted_table_keeps_each_counter_in_its_own_row(self):
+        rows = {
+            "TAP": Judgements(767, 626, 128, 21, 14),
+            "HOLD": Judgements(92, 45, 6, 0, 0),
+            "SLIDE": Judgements(162, 0, 2, 3, 1),
+            "TOUCH": Judgements(92, 0, 1, 0, 0),
+            "BREAK": Judgements(140, 65, 14, 0, 2),
+        }
+        for slope in (0.08, -0.08):
+            tokens = [
+                replace(
+                    t,
+                    top=t.top + slope * t.x,
+                    bottom=t.bottom + slope * t.x,
+                    slope=slope,
+                )
+                for t in table_tokens(rows, "98.3528")
+            ]
+            with self.subTest(slope=slope):
+                result = parse_ocr_tokens(tokens, [music(rows)])
+                self.assertEqual(result.rows, rows)
+                self.assertEqual(result.analysis.dx_score, 5382)
+                self.assertIn(result.analysis.status, ("unique", "ambiguous"))
+
+    def test_larger_incomplete_score_does_not_fall_back_to_personal_best(self):
+        tokens = [t for t in self.tokens if "%" not in t.text]
+        tokens.extend(
+            [
+                token(".875000%", 300, 75, width=220, height=50),
+                token("100.0000%", 300, 105, width=120),
+            ]
+        )
+        self.assertIsNone(parse_ocr_tokens(tokens, self.catalog).achievement)
+
+    def test_glare_can_hide_headers_without_hiding_five_numeric_columns(self):
+        for keep_miss in (False, True):
+            tokens = [
+                t for t in self.tokens if t.y != 130 or keep_miss and t.text == "MISS"
+            ]
+            with self.subTest(keep_miss=keep_miss):
+                result = parse_ocr_tokens(tokens, self.catalog)
+                self.assertEqual(result.rows, self.rows)
+                self.assertEqual(result.analysis.status, "unique")
+        merged = {name: Judgements(None, 10, 0, 0, 0) for name in NOTE_TYPES}
+        tokens = [
+            t for t in table_tokens(merged, "100.0000", merged=True) if t.y != 130
+        ]
+        self.assertEqual(parse_ocr_tokens(tokens, [music(merged)]).rows, {})
+
+    def test_split_percentage_is_joined_only_on_the_same_line(self):
+        tokens = [t for t in self.tokens if "%" not in t.text]
+        for prefix, suffix in (
+            ("100", ".875000%"),
+            ("100.", "875000%"),
+            ("100.", ".875000%"),
+        ):
+            with self.subTest(prefix=prefix, suffix=suffix):
+                result = parse_ocr_tokens(
+                    tokens
+                    + [
+                        token(prefix, 240, 75, width=100, height=50),
+                        token(suffix, 380, 75, width=150, height=50),
+                    ],
+                    self.catalog,
+                )
+                self.assertEqual(result.achievement, "100.875000")
+                self.assertEqual(result.analysis.candidates, [BreakDetails(1, 2)])
+        result = parse_ocr_tokens(
+            tokens
+            + [
+                token("100.", 240, 40, width=100, height=50),
+                token("875000%", 380, 75, width=150, height=50),
+            ],
+            self.catalog,
+        )
+        self.assertIsNone(result.achievement)
+        result = parse_ocr_tokens(
+            tokens
+            + [
+                token("100.", 240, 75, width=200, height=185),
+                token("875000%", 380, 75, width=230, height=185),
+            ],
+            self.catalog,
+        )
+        self.assertEqual(result.achievement, "100.875000")
+
+    def test_blank_touch_cells_are_zero_only_when_the_chart_has_no_touch(self):
+        rows = {**self.rows, "TOUCH": Judgements(0, 0, 0, 0, 0)}
+        tokens = [
+            t
+            for t in table_tokens(rows, "100.875000")
+            if not (t.y == 301 and t.text != "TOUCH")
+        ]
+        catalog = music(rows)
+        catalog.charts = [SimpleNamespace(notes=(10, 10, 10, 10)) for _ in range(4)]
+        result = parse_ocr_tokens(tokens, [catalog])
+        self.assertEqual(result.rows["TOUCH"], rows["TOUCH"])
+        self.assertEqual(result.partial_rows["TOUCH"], [0] * 5)
+        self.assertEqual(result.analysis.status, "unique")
+        result = parse_ocr_tokens(tokens, self.catalog)
+        self.assertNotIn("TOUCH", result.rows)
+        self.assertEqual(result.partial_rows["TOUCH"], [None] * 5)
+        result = parse_ocr_tokens(tokens + [token("1", 300, 301)], [catalog])
+        self.assertNotIn("TOUCH", result.rows)
+        self.assertEqual(result.partial_rows["TOUCH"][0], 1)
+
     def test_empty_image_has_no_fabricated_rows(self):
         result = parse_ocr_tokens([], self.catalog)
         self.assertEqual(result.rows, {})
@@ -342,6 +451,105 @@ class TableRecognitionTests(unittest.TestCase):
         self.assertEqual(result.aggregate, Judgements(47, 3, 0, 0, 0))
         self.assertEqual(result.rows, {})
         self.assertIn("Details", result.format())
+
+
+class OCRRecoveryTests(unittest.TestCase):
+    def test_failed_percentage_reread_does_not_select_personal_best(self):
+        """Require new pixels to recover the current score instead of its best."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["BREAK"] = Judgements(7, 3, 0, 0, 0)
+        observations = table_tokens(rows, "101.000000") + [
+            token("100.875000%", 300, 105)
+        ]
+        outputs = []
+        for tokens in (observations, [], [token("100.875000%", 100, 25)]):
+            outputs.append(
+                SimpleNamespace(
+                    boxes=np.array(
+                        [
+                            [
+                                [t.left, t.top],
+                                [t.right, t.top],
+                                [t.right, t.bottom],
+                                [t.left, t.bottom],
+                            ]
+                            for t in tokens
+                        ]
+                    ),
+                    txts=tuple(t.text for t in tokens),
+                    scores=tuple(t.score for t in tokens),
+                )
+            )
+        # The rec-only pass fails; the following detection pass reads the score.
+        outputs.insert(2, SimpleNamespace(txts=("101.000000%",), scores=(0.2,)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            Image.new("RGB", (800, 500), "white").save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = Mock(side_effect=outputs)
+            result = recognizer.recognize(path, [music(rows)])
+            outside = SimpleNamespace(
+                boxes=np.array([[[80, -10], [120, -10], [120, 8], [80, 8]]]),
+                txts=("100.875000%",),
+                scores=(0.99,),
+            )
+            recognizer.engine = Mock(side_effect=outputs[:3] + [outside])
+            failed = recognizer.recognize(path, [music(rows)])
+        self.assertEqual(result.achievement, "100.875000")
+        self.assertEqual(result.analysis.status, "unique")
+        self.assertEqual(recognizer.engine.call_count, 4)
+        self.assertEqual(failed.achievement, "101.000000")
+        self.assertEqual(failed.analysis.status, "inconsistent")
+
+    def test_mismatched_row_is_reread_from_pixels_without_changing_other_rows(self):
+        """Retry an observed 6 as a glyph, rather than forcing a catalog remainder."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["HOLD"] = Judgements(18, 24, 9, 1, 1)
+        value = calculate_achievement(rows, BreakDetails())
+        units = value.numerator * 10000 // value.denominator
+        observations = table_tokens(rows, f"{units // 10000}.{units % 10000:04d}")
+        observations = [
+            replace(t, text="6") if t.x == 480 and t.y == 217 else t
+            for t in observations
+        ]
+        outputs = []
+        for tokens in (observations, []):
+            outputs.append(
+                SimpleNamespace(
+                    boxes=np.array(
+                        [
+                            [
+                                [t.left, t.top],
+                                [t.right, t.top],
+                                [t.right, t.bottom],
+                                [t.left, t.bottom],
+                            ]
+                            for t in tokens
+                        ]
+                    ),
+                    txts=tuple(t.text for t in tokens),
+                    scores=tuple(t.score for t in tokens),
+                )
+            )
+        outputs.extend(
+            SimpleNamespace(txts=(str(value),), scores=(0.99,))
+            for value in (18, 24, 9, 1, 1)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            Image.new("RGB", (800, 500), "white").save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = Mock(side_effect=outputs)
+            result = recognizer.recognize(path, [music(rows)])
+        self.assertEqual(result.rows, rows)
+        self.assertEqual(result.analysis.status, "unique")
+        self.assertEqual(recognizer.engine.call_count, 7)
 
 
 class ScoreCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -516,7 +724,7 @@ class LocalScoreImageTests(unittest.TestCase):
         """Validate real images without tracking screenshots or downloading song data.
 
         Returns:
-            None. Asserts the four manually verified image results.
+            None. Asserts the available manually verified image results.
         """
         from astrbot_plugin_maibot.libraries.maimaidx_score_recognition import (
             ScoreRecognizer,
@@ -542,17 +750,103 @@ class LocalScoreImageTests(unittest.TestCase):
             ("adx结算详细版.jpg", "11816", 2112, BreakDetails(16, 0)),
             ("adx结算简略版.jpg", "233", 1864, None),
         )
+        if (root / "公众号标准成绩详情截图.jpg").is_file():
+            cases += (("公众号标准成绩详情截图.jpg", "348", 2246, BreakDetails()),)
+        if (root / "倾斜机台照片.jpg").is_file():
+            cases += (
+                ("倾斜机台照片.jpg", "11820", 5382, BreakDetails(49, 16, 11, 2, 1)),
+            )
+        if (root / "反向倾斜机台照片.jpg").is_file():
+            cases += (
+                ("反向倾斜机台照片.jpg", "11106", 2932, BreakDetails(8, 2, 1, 1, 0)),
+            )
+        if (root / "反光机台红谱照片.jpg").is_file():
+            cases += (("反光机台红谱照片.jpg", "11820", 3656, BreakDetails(8, 4, 1)),)
+        if (root / "带历史最佳机台照片.jpg").is_file():
+            cases += (
+                ("带历史最佳机台照片.jpg", "11382", 2746, BreakDetails(31, 2, 2)),
+            )
+        if (root / "ADX深色判定详情截图.jpg").is_file():
+            cases += (("ADX深色判定详情截图.jpg", "11509", 2275, BreakDetails(4)),)
         for filename, song_id, dx_score, details in cases:
             with self.subTest(filename=filename):
                 result = recognizer.recognize(root / filename, musics)
                 self.assertEqual(result.music_id, song_id)
                 self.assertEqual(result.dx_score, dx_score)
-                if details is None:
+                if filename == "adx结算简略版.jpg":
                     self.assertEqual(result.aggregate, Judgements(429, 275, 27, 1, 3))
                     self.assertEqual(result.rows, {})
-                else:
+                elif details is not None:
                     self.assertEqual(result.analysis.status, "unique")
                     self.assertEqual(result.analysis.candidates, [details])
+                if filename == "公众号标准成绩详情截图.jpg":
+                    self.assertEqual(result.achievement, "99.1893")
+                    self.assertEqual(result.rows["HOLD"], Judgements(18, 24, 9, 1, 1))
+                    self.assertEqual(result.rows["TOUCH"], Judgements(0, 0, 0, 0, 0))
+                elif filename == "倾斜机台照片.jpg":
+                    self.assertEqual(result.achievement, "98.3528")
+                    self.assertEqual(
+                        result.rows,
+                        {
+                            "TAP": Judgements(767, 626, 128, 21, 14),
+                            "HOLD": Judgements(92, 45, 6, 0, 0),
+                            "SLIDE": Judgements(162, 0, 2, 3, 1),
+                            "TOUCH": Judgements(92, 0, 1, 0, 0),
+                            "BREAK": Judgements(140, 65, 14, 0, 2),
+                        },
+                    )
+                    self.assertIn(result.analysis.status, ("unique", "ambiguous"))
+                elif filename == "反向倾斜机台照片.jpg":
+                    self.assertEqual(result.achievement, "97.3942")
+                    self.assertEqual(
+                        result.rows,
+                        {
+                            "TAP": Judgements(453, 320, 89, 20, 13),
+                            "HOLD": Judgements(21, 14, 2, 0, 0),
+                            "SLIDE": Judgements(92, 0, 2, 0, 0),
+                            "TOUCH": Judgements(125, 2, 0, 1, 3),
+                            "BREAK": Judgements(24, 10, 2, 0, 1),
+                        },
+                    )
+                    self.assertIn(result.analysis.status, ("unique", "ambiguous"))
+
+                elif filename == "反光机台红谱照片.jpg":
+                    self.assertEqual(result.achievement, "100.5782")
+                    self.assertEqual(result.difficulty, 2)
+                    self.assertEqual(
+                        result.rows,
+                        {
+                            "TAP": Judgements(668, 327, 20, 1, 1),
+                            "HOLD": Judgements(76, 26, 1, 0, 0),
+                            "SLIDE": Judgements(90, 0, 0, 0, 0),
+                            "TOUCH": Judgements(75, 0, 0, 0, 0),
+                            "BREAK": Judgements(59, 12, 1, 0, 0),
+                        },
+                    )
+                elif filename == "带历史最佳机台照片.jpg":
+                    self.assertEqual(result.achievement, "100.4033")
+                    self.assertEqual(
+                        result.rows,
+                        {
+                            "TAP": Judgements(378, 222, 21, 2, 0),
+                            "HOLD": Judgements(54, 23, 0, 0, 0),
+                            "SLIDE": Judgements(132, 0, 1, 0, 0),
+                            "TOUCH": Judgements(93, 0, 0, 0, 1),
+                            "BREAK": Judgements(65, 33, 2, 0, 0),
+                        },
+                    )
+                elif filename == "ADX深色判定详情截图.jpg":
+                    self.assertEqual(result.achievement, "100.819403")
+                    self.assertEqual(
+                        result.rows,
+                        {
+                            "TAP": Judgements(398, 162, 10, 0, 0),
+                            "HOLD": Judgements(35, 8, 0, 0, 0),
+                            "SLIDE": Judgements(54, 0, 0, 0, 0),
+                            "TOUCH": Judgements(95, 0, 0, 0, 0),
+                            "BREAK": Judgements(57, 4, 0, 0, 0),
+                        },
+                    )
 
 
 if __name__ == "__main__":

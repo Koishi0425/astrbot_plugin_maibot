@@ -162,6 +162,18 @@ class ScoreLossTests(unittest.TestCase):
         score = parse_manual_score(parameters, [MUSIC])
         self.assertTrue(render_score_image(score, MUSIC).startswith(b"\x89PNG"))
 
+    def test_ocr_diagnostics_do_not_appear_in_a_valid_result_image(self):
+        score = parse_manual_score(COMMAND, [MUSIC])
+        baseline = render_score_image(score, MUSIC)
+        score.warnings.extend(
+            [
+                "TAP GOOD 识别置信度较低，请核对。",
+                "表头未完整识别，根据五列判定位置恢复。",
+                "TAP MISS 未识别，由谱面物量与其余判定恢复为 1。",
+            ]
+        )
+        self.assertEqual(render_score_image(score, MUSIC), baseline)
+
 
 class ScoreCompletionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

@@ -532,6 +532,10 @@ class MaimaiDXPlugin(Star):
                         path,
                         musics,
                     )
+            if score.warnings:
+                logger.debug(
+                    "Score recognition diagnostics: %s", "; ".join(score.warnings)
+                )
             analysis = score.analysis
             if (
                 analysis
