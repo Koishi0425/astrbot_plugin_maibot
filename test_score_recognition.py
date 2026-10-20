@@ -554,6 +554,53 @@ class TableRecognitionTests(unittest.TestCase):
 
 
 class OCRRecoveryTests(unittest.TestCase):
+    def test_precision_fallback_reuses_models_and_restores_fast_settings(self):
+        """Retry failed scoring with original settings, restoring them on errors."""
+        from PIL import Image
+        from rapidocr import RapidOCR
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["BREAK"] = Judgements(7, 3, 0, 0, 0)
+        valid = parse_ocr_tokens(table_tokens(rows, "100.875000"), [music(rows)])
+        incomplete = parse_ocr_tokens([], [])
+        engine = Mock(spec=RapidOCR)
+        engine.text_det = SimpleNamespace(limit_type="max", limit_side_len=1280)
+        engine.text_rec = SimpleNamespace(rec_image_shape=[3, 48, 128])
+        engine.cfg = SimpleNamespace(Rec=SimpleNamespace(rec_img_shape=[3, 48, 128]))
+        settings = []
+
+        def stage(source, catalog):
+            settings.append(
+                (
+                    engine.text_det.limit_type,
+                    engine.text_det.limit_side_len,
+                    list(engine.text_rec.rec_image_shape),
+                )
+            )
+            return incomplete if len(settings) == 1 else valid
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            Image.new("RGB", (800, 500), "white").save(path)
+            recognizer = ScoreRecognizer(Path(directory))
+            recognizer.engine = engine
+            recognizer._recognize_source = Mock(side_effect=stage)
+            result = recognizer.recognize(path, [music(rows)])
+            self.assertIs(result, valid)
+            self.assertIs(recognizer.engine, engine)
+            self.assertEqual(
+                settings, [("max", 1280, [3, 48, 128]), ("min", 736, [3, 48, 320])]
+            )
+            recognizer._recognize_source = Mock(
+                side_effect=[incomplete, RuntimeError("failed")]
+            )
+            with self.assertRaises(RuntimeError):
+                recognizer.recognize(path, [music(rows)])
+        self.assertEqual(engine.text_det.limit_type, "max")
+        self.assertEqual(engine.text_det.limit_side_len, 1280)
+        self.assertEqual(engine.text_rec.rec_image_shape, [3, 48, 128])
+        self.assertEqual(engine.cfg.Rec.rec_img_shape, [3, 48, 128])
+
     def test_first_pass_skips_recovery_only_with_verified_dx_and_confident_cells(self):
         """Avoid a second OCR pass while retaining recovery for uncertain input."""
         import numpy as np
@@ -592,6 +639,8 @@ class OCRRecoveryTests(unittest.TestCase):
                     ),
                     SimpleNamespace(boxes=None, txts=None, scores=None),
                 ]
+                if variant == "low_confidence":
+                    outputs[1] = SimpleNamespace(txts=("0",), scores=(0.99,))
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "result.png"
                     Image.new("RGB", (800, 500), "white").save(path)
@@ -682,6 +731,7 @@ class OCRRecoveryTests(unittest.TestCase):
                 )
             )
         outputs.extend(SimpleNamespace(txts=("0",), scores=(0.99,)) for _ in range(2))
+        outputs[1:1] = [SimpleNamespace(txts=(), scores=()) for _ in range(2)]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "result.png"
             picture = Image.new("RGB", (800, 500), "white")
@@ -690,10 +740,10 @@ class OCRRecoveryTests(unittest.TestCase):
             recognizer = ScoreRecognizer(Path(directory))
             recognizer.engine = Mock(side_effect=outputs)
             result = recognizer.recognize(path, [music(rows)])
-        self.assertTrue(np.any(recognizer.engine.call_args_list[1].args[0] == 0))
+        self.assertTrue(np.any(recognizer.engine.call_args_list[3].args[0] == 0))
         self.assertEqual(result.rows, rows)
         self.assertEqual(result.analysis.status, "unique")
-        self.assertEqual(recognizer.engine.call_count, 4)
+        self.assertEqual(recognizer.engine.call_count, 6)
 
     def test_missing_large_score_is_retried_below_the_achievement_label(self):
         """Read the score region even when only the personal best was detected."""
@@ -709,7 +759,12 @@ class OCRRecoveryTests(unittest.TestCase):
         }
         observations = [t for t in table_tokens(rows, "100.4033") if "%" not in t.text]
         observations.extend(
-            [token("达成率", 280, 65, width=80), token("100.1442%", 400, 65)]
+            [
+                token("达成率", 280, 65, width=80),
+                token("100.1442%", 400, 65),
+                token("DX SCORE", 400, 400),
+                token("2746/3081", 400, 435),
+            ]
         )
         outputs = []
         for tokens in (observations, [], [token("100.1442%", 30, 10)]):
@@ -732,6 +787,7 @@ class OCRRecoveryTests(unittest.TestCase):
             )
         outputs.insert(2, SimpleNamespace(txts=("100.1442%",), scores=(0.99,)))
         outputs.append(SimpleNamespace(txts=("100.4033%",), scores=(0.99,)))
+        del outputs[1]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "result.png"
             Image.new("RGB", (1000, 650), "white").save(path)
@@ -740,7 +796,7 @@ class OCRRecoveryTests(unittest.TestCase):
             result = recognizer.recognize(path, [music(rows)])
         self.assertEqual(result.achievement, "100.4033")
         self.assertEqual(result.analysis.candidates, [BreakDetails(31, 2, 2)])
-        self.assertEqual(recognizer.engine.call_count, 5)
+        self.assertEqual(recognizer.engine.call_count, 4)
 
     def test_failed_percentage_reread_does_not_select_personal_best(self):
         """Require new pixels to recover the current score instead of its best."""
@@ -750,7 +806,9 @@ class OCRRecoveryTests(unittest.TestCase):
         rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
         rows["BREAK"] = Judgements(7, 3, 0, 0, 0)
         observations = table_tokens(rows, "101.000000") + [
-            token("100.875000%", 300, 105)
+            token("100.875000%", 300, 105),
+            token("DX SCORE", 400, 400),
+            token("147/150", 400, 435),
         ]
         outputs = []
         for tokens in (observations, [], [token("100.875000%", 100, 25)]):
@@ -773,6 +831,7 @@ class OCRRecoveryTests(unittest.TestCase):
             )
         # The rec-only pass fails; the following detection pass reads the score.
         outputs.insert(2, SimpleNamespace(txts=("101.000000%",), scores=(0.2,)))
+        del outputs[1]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "result.png"
             Image.new("RGB", (800, 500), "white").save(path)
@@ -784,11 +843,20 @@ class OCRRecoveryTests(unittest.TestCase):
                 txts=("100.875000%",),
                 scores=(0.99,),
             )
-            recognizer.engine = Mock(side_effect=outputs[:3] + [outside])
+            recognizer.engine = Mock(
+                side_effect=[
+                    outputs[0],
+                    outputs[1],
+                    outside,
+                    SimpleNamespace(boxes=None, txts=None, scores=None),
+                    outputs[1],
+                    outside,
+                ]
+            )
             failed = recognizer.recognize(path, [music(rows)])
         self.assertEqual(result.achievement, "100.875000")
         self.assertEqual(result.analysis.status, "unique")
-        self.assertEqual(recognizer.engine.call_count, 4)
+        self.assertEqual(recognizer.engine.call_count, 6)
         self.assertEqual(failed.achievement, "101.000000")
         self.assertEqual(failed.analysis.status, "inconsistent")
 
@@ -802,6 +870,7 @@ class OCRRecoveryTests(unittest.TestCase):
         value = calculate_achievement(rows, BreakDetails())
         units = value.numerator * 10000 // value.denominator
         observations = table_tokens(rows, f"{units // 10000}.{units % 10000:04d}")
+        observations.extend([token("DX SCORE", 400, 400), token("231/279", 400, 435)])
         observations = [
             replace(t, text="6") if t.x == 480 and t.y == 217 else t
             for t in observations
@@ -829,6 +898,7 @@ class OCRRecoveryTests(unittest.TestCase):
             SimpleNamespace(txts=(str(value),), scores=(0.99,))
             for value in (18, 24, 9, 1, 1)
         )
+        del outputs[1]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "result.png"
             Image.new("RGB", (800, 500), "white").save(path)
@@ -837,7 +907,7 @@ class OCRRecoveryTests(unittest.TestCase):
             result = recognizer.recognize(path, [music(rows)])
         self.assertEqual(result.rows, rows)
         self.assertEqual(result.analysis.status, "unique")
-        self.assertEqual(recognizer.engine.call_count, 7)
+        self.assertEqual(recognizer.engine.call_count, 6)
 
 
 class ScoreCommandTests(unittest.IsolatedAsyncioTestCase):

@@ -795,33 +795,86 @@ class ScoreRecognizer:
                 params={
                     "Global.model_root_dir": str(self.model_dir),
                     "Global.log_level": "error",
+                    "Det.limit_type": "max",
+                    "Det.limit_side_len": 1280,
+                    "Rec.rec_img_shape": [3, 48, 128],
                 }
             )
+        result = self._recognize_source(source, musics)
+        if (
+            result.music_id
+            and result.difficulty is not None
+            and result.achievement is not None
+            and (
+                result.analysis is not None
+                and result.analysis.status in ("unique", "ambiguous")
+                or result.aggregate is not None
+                and not any("不一致" in warning for warning in result.warnings)
+            )
+        ):
+            return result
+        if isinstance(self.engine, RapidOCR):
+            # Reuse the same ONNX sessions. Only preprocessing changes for the
+            # original precision pass; no second set of model weights is loaded.
+            detector = self.engine.text_det
+            rec_shape = list(self.engine.cfg.Rec.rec_img_shape)
+            det_type, det_limit = detector.limit_type, detector.limit_side_len
+            try:
+                detector.limit_type, detector.limit_side_len = "min", 736
+                self.engine.cfg.Rec.rec_img_shape = [3, 48, 320]
+                if self.engine.text_rec is not None:
+                    self.engine.text_rec.rec_image_shape = [3, 48, 320]
+                result = self._recognize_source(source, musics)
+            finally:
+                detector.limit_type, detector.limit_side_len = det_type, det_limit
+                self.engine.cfg.Rec.rec_img_shape = rec_shape
+                if self.engine.text_rec is not None:
+                    self.engine.text_rec.rec_image_shape = rec_shape
+        return result
+
+    def _recognize_source(self, source, musics: list) -> RecognizedScore:
+        """Run whole-image OCR, local recovery, and enlarged-table recovery.
+
+        Args:
+            source: Original BGR image pixels, retained for every retry.
+            musics: Public catalog with chart note totals.
+
+        Returns:
+            Observed score and exact scoring analysis for the active OCR settings.
+        """
         output = self.engine(source, use_det=True, use_cls=True, use_rec=True)
         if output.boxes is None or output.txts is None or output.scores is None:
-            raise ValueError("未识别到文字，请发送清晰的完整结算图片。")
+            result = parse_ocr_tokens([], musics)
+            result.warnings.append("未识别到文字，请发送清晰的完整结算图片。")
+            return result
         tokens = [
             OCRToken.from_box(text, score, box)
             for box, text, score in zip(output.boxes, output.txts, output.scores)
         ]
         first = parse_ocr_tokens(tokens, musics)
-        # Skip another OCR pass only when the title, chart totals, achievement
-        # and DX score already agree, with no low-confidence observed counters.
-        if (
-            first.analysis is not None
-            and first.analysis.status == "unique"
-            and not any("识别置信度较低" in warning for warning in first.warnings)
-            and first.music_id
-            and first.difficulty is not None
-            and first.dx_score is not None
-            and first.max_dx_score is not None
-            and any(
-                plain(re.sub(r"\[(DX|SD)\]\s*$", "", token.text, flags=re.I))
-                == plain(first.title or "")
-                for token in tokens
-            )
-        ):
-            return first
+        summary = any(plain(token.text) == "GRADING" for token in tokens)
+        for local_retry in (False, True):
+            if local_retry:
+                if summary:
+                    break
+                first = self._recover_tokens(source, tokens, musics, False)
+            # Skip another OCR pass only when the title, chart totals, achievement
+            # and DX score already agree, with no low-confidence observed counters.
+            if (
+                first.analysis is not None
+                and first.analysis.status == "unique"
+                and not any("识别置信度较低" in warning for warning in first.warnings)
+                and first.music_id
+                and first.difficulty is not None
+                and first.dx_score is not None
+                and first.max_dx_score is not None
+                and any(
+                    plain(re.sub(r"\[(DX|SD)\]\s*$", "", token.text, flags=re.I))
+                    == plain(first.title or "")
+                    for token in tokens
+                )
+            ):
+                return first
         anchors = [
             token
             for token in tokens
@@ -831,7 +884,6 @@ class ScoreRecognizer:
                 for alias in aliases
             )
         ]
-        summary = any(plain(token.text) == "GRADING" for token in tokens)
         if summary:
             anchors = [
                 token
@@ -920,6 +972,22 @@ class ScoreRecognizer:
                         for new in new_tokens
                     )
                 ]
+        return self._recover_tokens(source, tokens, musics, summary)
+
+    def _recover_tokens(
+        self, source, tokens: list[OCRToken], musics: list, summary: bool
+    ) -> RecognizedScore:
+        """Reread uncertain cells and achievement directly from original pixels.
+
+        Args:
+            source: Original BGR image pixels.
+            tokens: Observations from the full image or enlarged table.
+            musics: Public catalog with chart note totals.
+            summary: Whether the screenshot contains aggregate judgements.
+
+        Returns:
+            Score validated after targeted cell and percentage recovery.
+        """
         if summary:
             anchors = [
                 token
@@ -994,7 +1062,18 @@ class ScoreRecognizer:
                 }
             table = parse_table(tokens, [])
             for (name, column), (x, y) in table.centers.items():
-                if table.cells[name][column] is not None and name not in retry_rows:
+                uncertain = any(
+                    integer(token.text) is not None
+                    and token.score < 0.8
+                    and abs(token.x - x) < table.column_step * 0.43
+                    and abs(token.y - y) < table.row_step * 0.43
+                    for token in tokens
+                )
+                if (
+                    table.cells[name][column] is not None
+                    and name not in retry_rows
+                    and not uncertain
+                ):
                     continue
                 left, right = (
                     max(0, int(x - table.column_step * 0.42)),
