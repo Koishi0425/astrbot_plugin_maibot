@@ -485,6 +485,7 @@ class MaimaiDXPlugin(Star):
         """
         from astrbot.api.message_components import Image, Reply
         from astrbot.api.star import StarTools
+        from time import perf_counter
         from .libraries.maimaidx_score_recognition import (
             RecognizedScore,
             ScoreRecognizer,
@@ -517,12 +518,18 @@ class MaimaiDXPlugin(Star):
             return
         score = RecognizedScore("manual")
         musics = getattr(mai, "total_list", [])
+        started = perf_counter()
+        download_seconds = queue_seconds = recognition_seconds = 0.0
         try:
             if parameters:
                 score = parse_manual_score(parameters, musics)
             elif images:
                 path = Path(await images[0].convert_to_file_path())
+                downloaded = perf_counter()
+                download_seconds = downloaded - started
                 async with self.score_ocr_lock:
+                    recognition_started = perf_counter()
+                    queue_seconds = recognition_started - downloaded
                     if self.score_recognizer is None:
                         self.score_recognizer = ScoreRecognizer(
                             StarTools.get_data_dir("astrbot_plugin_maibot") / "ocr"
@@ -532,6 +539,7 @@ class MaimaiDXPlugin(Star):
                         path,
                         musics,
                     )
+                    recognition_seconds = perf_counter() - recognition_started
             if score.warnings:
                 logger.debug(
                     "Score recognition diagnostics: %s", "; ".join(score.warnings)
@@ -549,7 +557,17 @@ class MaimaiDXPlugin(Star):
                     (item for item in musics if str(item.id) == score.music_id),
                     None,
                 )
+                drawing_started = perf_counter()
                 picture = await asyncio.to_thread(render_score_image, score, music)
+                logger.info(
+                    "Score image ready: download=%.2fs queue=%.2fs "
+                    "recognition=%.2fs draw=%.2fs total=%.2fs",
+                    download_seconds,
+                    queue_seconds,
+                    recognition_seconds,
+                    perf_counter() - drawing_started,
+                    perf_counter() - started,
+                )
                 yield event.chain_result([Image.fromBytes(picture)])
                 return
             if score.aggregate:
@@ -577,6 +595,14 @@ class MaimaiDXPlugin(Star):
         except Exception:
             logger.exception("Score image recognition failed")
             reason = "识分失败，可重新发送清晰的完整结算图片，或手动补全以下指令。"
+        logger.info(
+            "Score input required: download=%.2fs queue=%.2fs "
+            "recognition=%.2fs total=%.2fs",
+            download_seconds,
+            queue_seconds,
+            recognition_seconds,
+            perf_counter() - started,
+        )
         reply = await score_completion_reply(event, score, reason)
         if reply is not None:
             yield reply

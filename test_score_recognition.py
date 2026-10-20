@@ -381,6 +381,30 @@ class TableRecognitionTests(unittest.TestCase):
         self.assertIsNone(result.music_id)
         self.assertIsNone(result.difficulty)
 
+    def test_exact_title_avoids_fuzzy_catalog_comparisons(self):
+        catalog = [
+            music(self.rows, f"Unrelated song {index}", str(index))
+            for index in range(100)
+        ] + self.catalog
+        with patch(
+            "astrbot_plugin_maibot.libraries.maimaidx_score_recognition.SequenceMatcher"
+        ) as matcher:
+            result = parse_ocr_tokens(self.tokens, catalog)
+        self.assertEqual(result.music_id, "12345")
+        self.assertEqual(result.rows, self.rows)
+        matcher.assert_not_called()
+
+    def test_fuzzy_title_still_matches_after_quick_similarity_bounds(self):
+        tokens = [
+            replace(t, text="Test s0ng") if t.text == "Test song" else t
+            for t in self.tokens
+        ]
+        result = parse_ocr_tokens(
+            tokens, [music(self.rows, "Other title", "54321")] + self.catalog
+        )
+        self.assertEqual(result.music_id, "12345")
+        self.assertEqual(result.analysis.status, "unique")
+
     def test_observed_counts_are_not_rewritten_to_match_catalog(self):
         tokens = [
             token("8", t.x, t.y) if t.x == 300 and t.y == 343 else t
@@ -530,6 +554,54 @@ class TableRecognitionTests(unittest.TestCase):
 
 
 class OCRRecoveryTests(unittest.TestCase):
+    def test_first_pass_skips_recovery_only_with_verified_dx_and_confident_cells(self):
+        """Avoid a second OCR pass while retaining recovery for uncertain input."""
+        import numpy as np
+        from PIL import Image
+
+        rows = {name: Judgements(10, 0, 0, 0, 0) for name in NOTE_TYPES}
+        rows["BREAK"] = Judgements(7, 3, 0, 0, 0)
+        observations = table_tokens(rows, "100.875000") + [
+            token("DX SCORE", 400, 400),
+            token("147/150", 400, 435),
+        ]
+        for variant, calls in (("verified", 1), ("low_confidence", 2), ("no_dx", 2)):
+            with self.subTest(variant=variant):
+                tokens = [
+                    replace(t, score=0.7)
+                    if variant == "low_confidence" and t.x == 570 and t.y == 175
+                    else t
+                    for t in observations
+                    if variant != "no_dx" or t.y < 400
+                ]
+                outputs = [
+                    SimpleNamespace(
+                        boxes=np.array(
+                            [
+                                [
+                                    [t.left, t.top],
+                                    [t.right, t.top],
+                                    [t.right, t.bottom],
+                                    [t.left, t.bottom],
+                                ]
+                                for t in tokens
+                            ]
+                        ),
+                        txts=tuple(t.text for t in tokens),
+                        scores=tuple(t.score for t in tokens),
+                    ),
+                    SimpleNamespace(boxes=None, txts=None, scores=None),
+                ]
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "result.png"
+                    Image.new("RGB", (800, 500), "white").save(path)
+                    recognizer = ScoreRecognizer(Path(directory))
+                    recognizer.engine = Mock(side_effect=outputs)
+                    result = recognizer.recognize(path, [music(rows)])
+                self.assertEqual(result.rows, rows)
+                self.assertEqual(result.analysis.status, "unique")
+                self.assertEqual(recognizer.engine.call_count, calls)
+
     def test_enlarged_partial_number_keeps_the_observed_full_counter(self):
         """Do not replace a confident 378 with a smaller detection of just 78."""
         import numpy as np

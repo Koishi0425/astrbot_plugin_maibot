@@ -44,6 +44,10 @@ ADX 简略结算可以识别歌曲、达成率与汇总判定；计算绝赞细�
 
 使用本地 RapidOCR，图片不上传到识别服务。首次使用会下载 OCR 模型到 AstrBot 的 `data/plugin_data/astrbot_plugin_maibot/ocr/`；后续使用缓存。表格识别方案参考 [maimai-score-studio](https://github.com/Koishi0425/maimai-score-studio)。
 
+首轮识别在歌曲名准确匹配、物量、达成率和 DX 分均通过校验且无低置信度判定时直接返回，其他图片继续执行放大识别和局部重试。曲名准确识别后不再对整个曲库反复做模糊比较。本机 10 张样例的识别阶段平均耗时由约 7.9 秒降至 5.3 秒；实际速度受服务器 CPU、容器资源限制和排队影响，首次模型加载或下载也会增加等待。
+
+服务器日志 `Score image ready` 分别记录 `download`（图片下载）、`queue`（等待 OCR）、`recognition`（识别与计分）、`draw`（绘图）和 `total`（结果图片生成前的总耗时）。`total` 不包含消息平台后续上传、发送图片的时间；需要手动补全时会记录 `Score input required`。多人同时识别仍按顺序使用 OCR，避免同时运行多个模型争抢服务器资源。
+
 舞萌 DX 的普通键型基础分为 TAP / HOLD / SLIDE / TOUCH = 500 / 1000 / 1500 / 500，Great 为 80%、Good 为 50%。绝赞基础分为 CP/P 2500、Great 2000/1500/1250、Good 1000；追加分为 CP 100、P50 75、P100 50、Great 40、Good 30。DX 分为 CP 3、P 2、Great 1、Good/Miss 0。规则参照 [MaiMuriDX 开发笔记](https://github.com/Minepig/MaiMuriDX/blob/master/docs/开发笔记.md)。
 
 ## 安装

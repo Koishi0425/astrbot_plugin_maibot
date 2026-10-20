@@ -654,14 +654,26 @@ def parse_ocr_tokens(tokens: list[OCRToken], musics: list) -> RecognizedScore:
         if all(value is not None for value in cells[1 if merged else 0 :])
     }
     charts = []
-    for music in musics:
+    # Exact titles already take precedence over every fuzzy candidate. Avoid
+    # comparing all OCR text against the entire catalog when one was read.
+    exact_musics = [
+        music
+        for music in musics
+        if int(music.id) < 100000 and plain(music.title) in title_texts
+    ]
+    for music in exact_musics or musics:
         if int(music.id) >= 100000:
             continue
         title = plain(music.title)
-        similarity = max(
-            (SequenceMatcher(None, title, text).ratio() for text in title_texts),
-            default=0,
-        )
+        similarity = 1 if exact_musics else 0
+        if not exact_musics:
+            for text in title_texts:
+                matcher = SequenceMatcher(None, title, text)
+                if (
+                    matcher.real_quick_ratio() > similarity
+                    and matcher.quick_ratio() > similarity
+                ):
+                    similarity = max(similarity, matcher.ratio())
         for index, chart in enumerate(music.charts):
             if result.difficulty is not None and index != result.difficulty:
                 continue
@@ -792,6 +804,24 @@ class ScoreRecognizer:
             OCRToken.from_box(text, score, box)
             for box, text, score in zip(output.boxes, output.txts, output.scores)
         ]
+        first = parse_ocr_tokens(tokens, musics)
+        # Skip another OCR pass only when the title, chart totals, achievement
+        # and DX score already agree, with no low-confidence observed counters.
+        if (
+            first.analysis is not None
+            and first.analysis.status == "unique"
+            and not any("识别置信度较低" in warning for warning in first.warnings)
+            and first.music_id
+            and first.difficulty is not None
+            and first.dx_score is not None
+            and first.max_dx_score is not None
+            and any(
+                plain(re.sub(r"\[(DX|SD)\]\s*$", "", token.text, flags=re.I))
+                == plain(first.title or "")
+                for token in tokens
+            )
+        ):
+            return first
         anchors = [
             token
             for token in tokens
