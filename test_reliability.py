@@ -240,8 +240,12 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             name="Plugin", bases=[], keywords=[], body=methods, decorator_list=[]
         )
         cls.namespace = dict(
+            __package__="astrbot_plugin_maibot",
             log=Mock(),
-            maiApi=SimpleNamespace(config=SimpleNamespace(arcade_enabled=False)),
+            maiApi=SimpleNamespace(
+                config=SimpleNamespace(arcade_enabled=False, resource_local_path="")
+            ),
+            Path=Path,
             mai=None,
             read_json=storage.read_json,
             write_json=storage.write_json,
@@ -262,6 +266,12 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         """Prepare independent initialization stages."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.namespace["Root"] = self.root / "plugin"
+        self.namespace["resource_dir"] = self.root / "persistent/static"
+        self.namespace["maiApi"].config.resource_local_path = ""
         self.plugin = self.Plugin()
         self.plugin._load_disabled_groups = Mock()
         self.plugin._setup_configuration = Mock()
@@ -283,6 +293,50 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_images_still_runs_resource_checks_and_schedules(self):
         await self.plugin.initialize()
+        self.plugin._perform_initial_checks.assert_called_once()
+        self.plugin._setup_schedulers.assert_called_once()
+
+    async def test_missing_resources_restore_from_existing_local_archive(self):
+        from astrbot_plugin_maibot.libraries import maimaidx_resource as resources
+
+        archive = self.root / "Resource.7z"
+        archive.touch()
+        self.namespace["maiApi"].config.resource_local_path = str(archive)
+        with patch.object(
+            resources, "install_maimai_resources", AsyncMock()
+        ) as install:
+            await self.plugin.initialize()
+        install.assert_awaited_once_with(local_path=archive)
+        self.plugin._setup_schedulers.assert_called_once()
+
+    async def test_existing_persistent_resources_are_not_reimported(self):
+        from astrbot_plugin_maibot.libraries import maimaidx_resource as resources
+
+        archive = self.root / "Resource.7z"
+        archive.touch()
+        self.namespace["maiApi"].config.resource_local_path = str(archive)
+        resource = self.namespace["resource_dir"] / "mai/pic/prism_plus/b50.png"
+        resource.parent.mkdir(parents=True)
+        resource.write_bytes(b"existing")
+        with patch.object(
+            resources, "install_maimai_resources", AsyncMock()
+        ) as install:
+            await self.plugin.initialize()
+        install.assert_not_awaited()
+
+    async def test_failed_local_restore_does_not_skip_data_checks_or_schedules(self):
+        from astrbot_plugin_maibot.libraries import maimaidx_resource as resources
+
+        archive = self.root / "Resource.7z"
+        archive.touch()
+        self.namespace["maiApi"].config.resource_local_path = str(archive)
+        with patch.object(
+            resources,
+            "install_maimai_resources",
+            AsyncMock(side_effect=OSError("disk full")),
+        ):
+            await self.plugin.initialize()
+        self.plugin._load_maimai_data.assert_awaited_once()
         self.plugin._perform_initial_checks.assert_called_once()
         self.plugin._setup_schedulers.assert_called_once()
 

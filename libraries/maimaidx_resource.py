@@ -18,7 +18,8 @@ from .. import (
     plate_versiondir,
     ratingdir,
     shougoudir,
-    static,
+    resource_dir,
+    LEGACY_DATA_FILES,
     themepicdir,
 )
 
@@ -80,7 +81,7 @@ EXPECTED_RESOURCE_PATHS = (
     ),
     maimaidir / "UI_Icon_509506.png",
     maimaidir / "UI_Plate_550101.png",
-    *(static / "font" / name for name in FONT_NAMES),
+    *(resource_dir / "font" / name for name in FONT_NAMES),
 )
 
 
@@ -122,7 +123,7 @@ def _display_path(path: Path) -> str:
 
 def _resource_path(path: Path) -> str:
     try:
-        return str(path.relative_to(static)).replace("\\", "/")
+        return str(path.relative_to(resource_dir)).replace("\\", "/")
     except ValueError:
         return str(path)
 
@@ -219,7 +220,7 @@ def _copy_tree(source: Path, target: Path, result: ResourceInstallResult) -> Non
         if src.is_dir():
             dst.mkdir(parents=True, exist_ok=True)
             continue
-        if src.name.lower() == "config.json":
+        if src.name.lower() == "config.json" or src.name in LEGACY_DATA_FILES:
             result.skipped_files.append(rel_key)
             continue
 
@@ -234,7 +235,7 @@ def _ensure_current_layout_dirs() -> None:
 
 
 def _copy_full_static(source_static: Path, result: ResourceInstallResult) -> None:
-    _copy_tree(source_static, static, result)
+    _copy_tree(source_static, resource_dir, result)
     _ensure_current_layout_dirs()
 
 
@@ -404,7 +405,15 @@ async def install_maimai_resources(
     local_path: Optional[Union[str, Path]] = "",
     url: Optional[str] = "",
 ) -> ResourceInstallResult:
-    """Install resources into static/ from a local package/directory first, then optional URL."""
+    """Install resources into persistent storage from a local source or URL.
+
+    Args:
+        local_path: Resource archive or extracted directory, relative to the plugin.
+        url: Optional download source when local resources are unavailable.
+
+    Returns:
+        Copied files, skipped user settings, and missing required resources.
+    """
     result = ResourceInstallResult()
     resolved_local = _resolve_local_path(local_path)
 

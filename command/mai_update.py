@@ -4,7 +4,7 @@ from typing import Optional
 
 from astrbot.api.event import AstrMessageEvent
 
-from .. import log
+from .. import log, resource_dir
 from ..libraries.maimaidx_api_data import MaiConfig, maiApi
 from ..libraries.maimaidx_music import mai
 from ..libraries.maimaidx_resource import (
@@ -65,7 +65,8 @@ async def _update_static_resources(
     msg = [
         "静态资源更新完成。" if result.ok else "静态资源安装未完成。",
         f"已复制文件数：{result.copied_files}",
-        "安装目标：static/。",
+        f"安装目标：{resource_dir}。",
+        "资源目录独立于插件代码，后续更新插件会保留。",
         "配置已由 AstrBot WebUI 管理，未读写 static/config.json。",
         cache_msg,
     ]

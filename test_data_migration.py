@@ -2,6 +2,7 @@
 
 import tempfile
 import asyncio
+import shutil
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,10 +17,12 @@ class DataMigrationTests(unittest.TestCase):
         """Prepare isolated legacy and current plugin directories."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.temporary_root = Path(temporary.name)
+        self.root = self.temporary_root / "plugin"
+        self.root.mkdir()
         self.static = self.root / "static"
         self.static.mkdir()
-        self.data = self.root / "data"
+        self.data = self.temporary_root / "persistent"
         self.data.mkdir()
         self.source = Path(__file__).with_name("__init__.py").read_text("utf-8")
         self.namespace = {"__file__": str(self.root / "__init__.py")}
@@ -46,6 +49,65 @@ class DataMigrationTests(unittest.TestCase):
             self.assertEqual(self.namespace[name].parent, self.data)
         self.assertIs(self.namespace["log"], logger)
         self.assertEqual(self.namespace["static"], self.static)
+        self.assertEqual(self.namespace["resource_dir"], self.data / "static")
+
+    def test_upgrade_replaces_code_but_preserves_resources_and_user_data(self):
+        for relative in (
+            "mai/cover/1.png",
+            "mai/pic/prism_plus/b50.png",
+            "font/ResourceHanRoundedCN-Bold.ttf",
+        ):
+            path = self.static / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"asset")
+        for name in ("user_qq_bindings.json", "disabled_groups.json", "arcades.json"):
+            (self.static / name).write_text('{"keep": true}', "utf-8")
+        with patch.object(StarTools, "get_data_dir", return_value=self.data):
+            exec(compile(self.source, "__init__.py", "exec"), self.namespace)
+        # Simulate the framework replacing exactly this temporary plugin checkout.
+        self.assertTrue(
+            self.root.resolve().is_relative_to(self.temporary_root.resolve())
+        )
+        shutil.rmtree(self.root)
+        self.static.mkdir(parents=True)
+        (self.static / "echarts.min.js").write_bytes(b"new bundled script")
+        with patch.object(StarTools, "get_data_dir", return_value=self.data):
+            exec(compile(self.source, "__init__.py", "exec"), self.namespace)
+        self.assertEqual((self.namespace["coverdir"] / "1.png").read_bytes(), b"asset")
+        self.assertEqual(self.namespace["SIYUAN"].read_bytes(), b"asset")
+        self.assertEqual(
+            (self.namespace["static"] / "echarts.min.js").read_bytes(),
+            b"new bundled script",
+        )
+        for name in ("user_qq_bindings.json", "disabled_groups.json", "arcades.json"):
+            self.assertEqual((self.data / name).read_text("utf-8"), '{"keep": true}')
+
+    def test_asset_migration_never_overwrites_persistent_resource_updates(self):
+        old = self.static / "mai/cover/1.png"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old")
+        current = self.data / "static/mai/cover/1.png"
+        current.parent.mkdir(parents=True)
+        current.write_bytes(b"current")
+        with patch.object(StarTools, "get_data_dir", return_value=self.data):
+            exec(compile(self.source, "__init__.py", "exec"), self.namespace)
+        self.assertEqual(current.read_bytes(), b"current")
+
+    def test_interrupted_migration_does_not_publish_partial_json(self):
+        (self.static / "user_qq_bindings.json").write_text('{"keep": true}', "utf-8")
+
+        def incomplete_copy(source, target):
+            Path(target).write_bytes(b'{"partial":')
+            raise OSError("disk full")
+
+        with (
+            patch.object(StarTools, "get_data_dir", return_value=self.data),
+            patch("shutil.copy2", side_effect=incomplete_copy),
+            self.assertRaises(OSError),
+        ):
+            exec(compile(self.source, "__init__.py", "exec"), self.namespace)
+        self.assertFalse((self.data / "user_qq_bindings.json").exists())
+        self.assertEqual(list(self.data.iterdir()), [])
 
     def test_keeps_current_data_and_does_not_copy_legacy_credentials(self):
         (self.static / "user_qq_bindings.json").write_text("old", "utf-8")

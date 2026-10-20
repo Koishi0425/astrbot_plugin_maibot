@@ -22,7 +22,7 @@ class ResourceInstallerTests(unittest.TestCase):
         self.source.mkdir()
         target = self.root / "installed"
         for name, path in {
-            "static": target,
+            "resource_dir": target,
             "maimaidir": target / "mai/pic",
             "ratingdir": self.root / "data/rating_table",
             "platedir": self.root / "data/plate_table",
@@ -48,6 +48,7 @@ class ResourceInstallerTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"test asset")
         (source_static / "config.json").write_text('{"secret": "excluded"}', "utf-8")
+        (source_static / "user_qq_bindings.json").write_text('{"old": true}', "utf-8")
         archive = self.root / "Resource.7z"
         with py7zr.SevenZipFile(archive, "w") as output:
             output.writeall(self.source / "Resource CN1.55", arcname="Resource CN1.55")
@@ -55,9 +56,13 @@ class ResourceInstallerTests(unittest.TestCase):
         resource._install_archive(archive, result)
         self.assertEqual(result.copied_files, len(files))
         for relative in files:
-            self.assertEqual((resource.static / relative).read_bytes(), b"test asset")
-        self.assertFalse((resource.static / "config.json").exists())
+            self.assertEqual(
+                (resource.resource_dir / relative).read_bytes(), b"test asset"
+            )
+        self.assertFalse((resource.resource_dir / "config.json").exists())
         self.assertIn("config.json", result.skipped_files)
+        self.assertIn("user_qq_bindings.json", result.skipped_files)
+        self.assertFalse((resource.resource_dir / "user_qq_bindings.json").exists())
 
     def test_deeply_wrapped_full_static_is_not_treated_as_incremental(self):
         source_static = self.source / "outer/inner/static"
@@ -71,7 +76,9 @@ class ResourceInstallerTests(unittest.TestCase):
         result = resource.ResourceInstallResult()
         resource._install_resource_dir(self.source, result)
         self.assertEqual(result.copied_files, 4)
-        self.assertTrue((resource.static / "mai/pic/prism_plus/b50.png").is_file())
+        self.assertTrue(
+            (resource.resource_dir / "mai/pic/prism_plus/b50.png").is_file()
+        )
 
     def test_digit_only_archive_remains_supported(self):
         source = self.source / "Rating Update"
@@ -81,7 +88,7 @@ class ResourceInstallerTests(unittest.TestCase):
         result = resource.ResourceInstallResult()
         resource._install_resource_dir(self.source, result)
         self.assertEqual(result.copied_files, 10)
-        self.assertFalse((resource.static / "mai/pic/prism_plus").exists())
+        self.assertFalse((resource.resource_dir / "mai/pic/prism_plus").exists())
 
     def test_unsupported_full_tree_does_not_silently_install_just_digits(self):
         pic = self.source / "old/static/mai/pic"

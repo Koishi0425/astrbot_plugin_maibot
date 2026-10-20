@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import shutil
+import tempfile
 from typing import Dict, List
 
 from astrbot.api import logger
@@ -81,10 +83,11 @@ SNAPSHOT_JS = (
 
 # 文件路径
 Root: Path = Path(__file__).parent
-static: Path = Root / 'static'
-fontdir: Path = static / "font"
+static: Path = Root / "static"
 
 data_dir: Path = StarTools.get_data_dir("astrbot_plugin_maibot")
+resource_dir: Path = data_dir / "static"
+fontdir: Path = resource_dir / "font"
 arcades_json: Path = data_dir / "arcades.json"
 alias_file: Path = data_dir / "music_alias.json"
 local_alias_file: Path = data_dir / "local_music_alias.json"
@@ -96,35 +99,57 @@ user_qq_bindings_file: Path = data_dir / "user_qq_bindings.json"
 group_rating_file: Path = data_dir / "group_rating_users.json"
 pie_html_file: Path = data_dir / "temp_pie.html"
 
-# Preserve legacy settings without replacing data already migrated or updated.
-for _filename in (
+# Keep user stores separate from both replaceable code and resource archives.
+LEGACY_DATA_FILES = (
     "arcades.json",
     "music_alias.json",
     "local_music_alias.json",
     "music_data.json",
     "music_chart.json",
+    "music_plate.json",
     "group_guess_switch.json",
     "group_alias_switch.json",
     "user_qq_bindings.json",
     "group_rating_users.json",
     "disabled_groups.json",
-):
-    _source = static / _filename
-    _destination = data_dir / _filename
+)
+_legacy_files = [(static / name, data_dir / name, True) for name in LEGACY_DATA_FILES]
+for _directory in (static / "mai", static / "font"):
+    if _directory.is_dir():
+        _legacy_files.extend(
+            (_file, resource_dir / _file.relative_to(static), False)
+            for _file in _directory.rglob("*")
+            if _file.is_file()
+        )
+for _source, _destination, _required in _legacy_files:
     if _source.is_file() and not _destination.exists():
+        _temporary = None
         try:
-            shutil.copy2(_source, _destination)
+            _destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=_destination.parent,
+                prefix=f".{_destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as _output:
+                _temporary = Path(_output.name)
+            shutil.copy2(_source, _temporary)
+            os.replace(_temporary, _destination)
         except OSError:
-            log.error("Unable to migrate legacy plugin data: %s", _filename)
-            raise
+            log.exception("Unable to migrate legacy plugin file: %s", _source.name)
+            if _required:
+                raise
+        finally:
+            if _temporary is not None:
+                _temporary.unlink(missing_ok=True)
 
 
 # 静态资源路径
-maimaidir: Path = static / "mai" / "pic"
+maimaidir: Path = resource_dir / "mai" / "pic"
 themepicdir: Path = maimaidir / "prism_plus"
-coverdir: Path = static / "mai" / "cover"
-plate_versiondir: Path = static / "mai" / "plate_version"
-shougoudir: Path = static / "mai" / "shougou"
+coverdir: Path = resource_dir / "mai" / "cover"
+plate_versiondir: Path = resource_dir / "mai" / "plate_version"
+shougoudir: Path = resource_dir / "mai" / "shougou"
 # 新版资源将生成表与牌子图分离：rating_table/plate_table 为生成表，plate_version 为牌子图。
 ratingdir: Path = data_dir / "rating_table"
 platedir: Path = data_dir / "plate_table"

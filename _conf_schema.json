@@ -95,7 +95,7 @@
     "items": {
       "resource_local_path": {
         "description": "本地资源路径",
-        "hint": "可选的本地资源目录或 .7z 文件，仅作为“更新舞萌资源”的导入来源。相对路径基于插件根目录，安装目标始终是 static。",
+        "hint": "可选的本地资源目录或 .7z 文件，建议放在插件目录之外。资源导入 data/plugin_data/astrbot_plugin_maibot/static，正常更新后保留；启动时缺少关键素材会从仍存在的本地来源恢复。相对路径基于插件根目录。",
         "type": "string",
         "default": ""
       },

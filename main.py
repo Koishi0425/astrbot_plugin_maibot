@@ -9,7 +9,7 @@ import traceback
 import re
 from pathlib import Path
 
-from . import Root, log, loga, ratingdir, platedir, plate_to_dx_version, platecn, data_dir, _BOTNAME
+from . import Root, log, loga, ratingdir, platedir, plate_to_dx_version, platecn, data_dir, resource_dir, _BOTNAME
 from .libraries.maimai_best_50 import ScoreBaseImage
 from .libraries.maimaidx_api_data import MaiConfig, maiApi
 from .libraries.maimaidx_music import mai
@@ -130,7 +130,7 @@ class MaimaiDXPlugin(Star):
         if self.superusers:
             log.info(f"从 astrbot 配置中获取到管理员ID列表: {self.superusers}")
         else:
-            log.warning('未找到任何管理员ID，某些需要管理员权限的命令可能无法使用')
+            log.warning("未找到任何管理员ID，某些需要管理员权限的命令可能无法使用")
 
     async def initialize(self):
         """Initialize independent features and always register recovery schedules."""
@@ -139,6 +139,27 @@ class MaimaiDXPlugin(Star):
                 setup()
             except Exception:
                 log.exception("Plugin setup stage failed: %s", setup.__name__)
+        try:
+            # Older versions stored resources in the directory replaced by an
+            # update. Recover once from the configured local archive if needed.
+            if not (resource_dir / "mai/pic/prism_plus/b50.png").is_file():
+                source = Path(maiApi.config.resource_local_path).expanduser()
+                if maiApi.config.resource_local_path.strip():
+                    if not source.is_absolute():
+                        source = Root / source
+                    if source.exists():
+                        from .libraries.maimaidx_resource import (
+                            install_maimai_resources,
+                        )
+
+                        log.info("Restoring resources into persistent storage")
+                        result = await install_maimai_resources(local_path=source)
+                        if not result.ok:
+                            log.warning("Local resource recovery is incomplete")
+        except Exception:
+            log.exception(
+                "Persistent resource recovery failed; initialization continues"
+            )
         try:
             await self._load_maimai_data()
         except Exception:
